@@ -1,0 +1,43 @@
+# Build plan
+
+Agreed build order and the decisions that are not domain language. Domain terms live in `../CONTEXT.md`; hard-to-reverse decisions live in `adr/`.
+
+## Slices
+
+Each slice ends with something runnable.
+
+1. **Environment** — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
+2. **One Source, end to end** — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
+3. **Overlays** — one text Overlay and one image Overlay.
+4. **Project file** — save, reopen, autosave.
+5. **Several Sources in one Row** — height matching, Gaps, Audio Source.
+6. **Frame stepper** — refine each Sync Point frame by frame.
+7. **Speed** — Record Rate, Output Speed, Output Rate, Frame Hint.
+8. **Draft render.**
+9. **Column, then grid** — width matching, Bars, Crop Hint.
+
+## Decisions
+
+- **Library**: MoviePy 2.x. Text is drawn with Pillow, so ImageMagick is not needed. ffmpeg comes bundled through `imageio-ffmpeg`.
+- **Fonts**: open-licensed font files kept in `assets/fonts/`. Nothing depends on fonts installed in Windows.
+- **Input**: local file paths with a native Browse dialog. No uploader. See `adr/0001`.
+- **Timing**: every Source is placed on Event Time. See `adr/0002`.
+- **Sync Point entry**: typed from an external viewer, then optionally refined with a frame stepper that overwrites the typed value. No in-app player.
+- **Preview time**: the Preview shows every Source at its Sync Point by default, with a control to move earlier or later.
+- **Timing feedback**: next to Lead-in and Lead-out, show each Source's start and end file times and its Gap lengths.
+- **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation).
+- **Output Speed choices**: slowest Source (default), real time, or custom.
+- **Overlays**: text is white on a half-transparent black box with size and corner. Image is any file via Browse, plus a quick-pick list from `assets/logos/`, with corner, width as a percentage of the Output, and background opacity. Both default to off. Same-corner collision gives a warning.
+- **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
+- **Output location**: written to a user-chosen folder, not offered as a browser download.
+- **Project file**: plain readable text, stored where the user chooses, holding Source paths and all settings.
+- **Draft**: written to a temporary folder and replaced each time. Both Draft and full render show progress.
+- **Code shape**: timing and layout arithmetic are plain functions with automated tests, kept apart from the Streamlit screens.
+
+## Deferred
+
+- Text label on each Panel.
+- More than one text or image Overlay, timed Overlays, colour choices.
+- Draft of a time window only.
+- Hosting for other users (needs upload handling).
+- Formats other than MP4.
