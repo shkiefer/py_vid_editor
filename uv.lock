@@ -627,9 +627,11 @@ wheels = [
 [[package]]
 name = "py-vid-editor"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "moviepy" },
+    { name = "numpy" },
+    { name = "pillow" },
     { name = "streamlit" },
 ]
 
@@ -641,6 +643,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "moviepy", specifier = ">=2,<3" },
+    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "pillow", specifier = ">=11.3.0" },
     { name = "streamlit", specifier = ">=1.64.0" },
 ]
 

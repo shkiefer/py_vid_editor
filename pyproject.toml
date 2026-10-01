@@ -4,10 +4,26 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
     "moviepy>=2,<3",
+    "numpy>=2.5.3",
+    "pillow>=11.3.0",
     "streamlit>=1.64.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "vid_editor"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # MoviePy's ffmpeg reader sets ndarray.shape, deprecated in NumPy 2.5.
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
 ]

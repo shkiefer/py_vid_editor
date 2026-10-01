@@ -6,8 +6,8 @@ Agreed build order and the decisions that are not domain language. Domain terms 
 
 Each slice ends with something runnable.
 
-1. **Environment** — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
-2. **One Source, end to end** — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
+1. **Environment** (done) — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
+2. **One Source, end to end** (done) — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
 3. **Overlays** — one text Overlay and one image Overlay.
 4. **Project file** — save, reopen, autosave.
 5. **Several Sources in one Row** — height matching, Gaps, Audio Source.
@@ -33,6 +33,12 @@ Each slice ends with something runnable.
 - **Project file**: plain readable text, stored where the user chooses, holding Source paths and all settings.
 - **Draft**: written to a temporary folder and replaced each time. Both Draft and full render show progress.
 - **Code shape**: timing and layout arithmetic are plain functions with automated tests, kept apart from the Streamlit screens.
+
+## Known limits
+
+- **Rotation by an angle that is not a quarter turn is slow.** On a 1080p Source it costs roughly 110 ms per frame, against roughly 10 ms for a plain, cropped, or quarter-turned Source. The cost is in Pillow's image rotation. OpenCV would cut it to a few milliseconds but adds a dependency; not adopted yet.
+- **Scaling to an Output width costs roughly 40 ms per frame at 1080p**, also in Pillow.
+- **One Source keeps its own sound** until the Audio Source selector arrives in slice 5.
 
 ## Deferred
 

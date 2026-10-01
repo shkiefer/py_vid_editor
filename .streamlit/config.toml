@@ -1,0 +1,7 @@
+# The app is local-only (docs/adr/0001): it reads and writes files by path,
+# so it must not be reachable from other machines on the network.
+[server]
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
