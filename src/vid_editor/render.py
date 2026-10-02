@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips, vfx
+from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
 from vid_editor.model import Crop, Project, Quality, Source
@@ -24,6 +25,28 @@ _NEGLIGIBLE = 1e-6
 
 ProgressCallback = Callable[[str, float], None]
 """Called with a stage name ("sound" or "picture") and a fraction from 0 to 1."""
+
+
+def _tolerate_unnamed_metadata_lines() -> None:
+    """Work around a MoviePy 2.2.1 fault that rejects iPhone recordings.
+
+    MoviePy reads a line of ffmpeg's report that has no "name: value" shape as
+    more text for the value before it. When that value is the rotation, already
+    turned into a number, joining the two fails and the file cannot be opened.
+    iPhone HDR footage has such a line straight after its rotation. Giving the
+    line a name of its own keeps it apart from the value before it.
+    """
+    read_field = FFmpegInfosParser.parse_metadata_field_value
+
+    def read_field_or_name_the_line(self, line: str) -> tuple[str, str]:
+        if ":" not in line:
+            return line.strip(), ""
+        return read_field(self, line)
+
+    FFmpegInfosParser.parse_metadata_field_value = read_field_or_name_the_line
+
+
+_tolerate_unnamed_metadata_lines()
 
 
 class EditError(ValueError):

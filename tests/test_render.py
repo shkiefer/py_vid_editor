@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 from conftest import file_time_shown, is_black
 from moviepy import VideoFileClip
+from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 
 from vid_editor.model import Crop, OutputSettings, Project, Quality, Source
 from vid_editor.render import (
@@ -41,6 +42,40 @@ def test_opening_a_missing_or_unreadable_file_is_an_edit_error(tmp_path):
     not_video.write_text("not a video")
     with pytest.raises(EditError, match="Could not read"):
         open_source(str(not_video))
+
+
+# What ffmpeg reports for a portrait iPhone recording. The line after the
+# rotation has no "name: value" shape, which MoviePy 2.2.1 cannot parse.
+IPHONE_REPORT = """\
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'IMG_0001.MOV':
+  Metadata:
+    major_brand     : qt
+    com.apple.quicktime.model: iPhone 15 Pro Max
+  Duration: 00:00:05.37, start: 0.000000, bitrate: 8821 kb/s
+  Stream #0:0[0x1](und): Video: hevc (Main 10) (hvc1 / 0x31637668), yuv420p10le(tv, bt2020nc/bt2020/arib-std-b67), 1920x1080, 8580 kb/s, 29.98 fps, 29.97 tbr, 600 tbn (default)
+      Metadata:
+        handler_name    : Core Media Video
+        encoder         : HEVC
+      Side data:
+        DOVI configuration record: version: 1.0, profile: 8, level: 4, rpu flag: 1, el flag: 0, bl flag: 1, compatibility id: 4, compression: 0
+        displaymatrix: rotation of -90.00 degrees
+        Ambient Viewing Environment, ambient_illuminance=314.000000, ambient_light_x=0.312700, ambient_light_y=0.329000
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 170 kb/s (default)
+      Metadata:
+        handler_name    : Core Media Audio
+  Stream #0:2[0x3](und): Data: none (mebx / 0x7862656D), 0 kb/s (default)
+      Metadata:
+        handler_name    : Core Media Metadata
+At least one output file must be specified
+"""
+
+
+def test_an_iphone_recording_with_extra_side_data_can_be_read():
+    infos = FFmpegInfosParser(IPHONE_REPORT, "IMG_0001.MOV").parse()
+    assert infos["video_size"] == [1920, 1080]
+    assert infos["video_rotation"] == 90
+    assert infos["duration"] == pytest.approx(5.37)
+    assert infos["audio_found"]
 
 
 def test_preview_at_the_lead_in_mark_shows_the_sync_point(source_path, source_clip):
