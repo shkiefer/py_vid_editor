@@ -14,14 +14,23 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips
+from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips, vfx
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
 from vid_editor.layout import RowLayout, even, row_layout
 from vid_editor.model import Crop, EditError, Project, Quality, Source
 from vid_editor.overlays import overlay_patches, stamper
-from vid_editor.timing import SourceSpan, file_time_at, frame_at, source_span
+from vid_editor.timing import (
+    FrameHint,
+    SourceSpan,
+    file_time_at,
+    frame_at,
+    frame_hint,
+    is_real_time,
+    source_span,
+    source_speed,
+)
 
 # H.264 constant rate factor per quality level. Lower is better and larger.
 _CRF = {Quality.HIGH: 18, Quality.MEDIUM: 23, Quality.SMALL: 28}
@@ -207,24 +216,90 @@ def edited_size(clip: VideoFileClip, source: Source) -> tuple[int, int]:
     return source_sizes((int(clip.w), int(clip.h)), source)[1]
 
 
-def span_of(clip: VideoFileClip, source: Source, project: Project) -> SourceSpan:
+@dataclass(frozen=True)
+class Speeds:
+    """The Output Speed in use and each Source's Source Speed, where 1 is real time."""
+
+    output: float
+    sources: tuple[float, ...]
+
+
+def speeds(project: Project, clips: Sequence[VideoFileClip]) -> Speeds:
+    """Work out the speeds. The Output Speed defaults to the slowest Source Speed."""
+    try:
+        sources = tuple(
+            source_speed(float(clip.fps), source.record_rate)
+            for clip, source in zip(clips, project.sources)
+        )
+    except ValueError as error:
+        raise EditError(str(error)) from error
+    output = project.output.speed
+    if output is None:
+        output = min(sources)
+    elif output <= 0:
+        raise EditError("The Output Speed must be greater than zero")
+    return Speeds(output=output, sources=sources)
+
+
+def silence_reason(project: Project, clips: Sequence[VideoFileClip]) -> str | None:
+    """Why the Output has no sound, or None when it has.
+
+    Sound is kept only when the Audio Source and the Output are both real time.
+    """
+    chosen = project.audio_source
+    if chosen is None:
+        return "no Audio Source is chosen"
+    if not 0 <= chosen < len(clips):
+        raise EditError("The Audio Source is not one of the Sources")
+    if clips[chosen].audio is None:
+        return f"Source {chosen + 1} has no sound"
+    speed = speeds(project, clips)
+    if not is_real_time(speed.sources[chosen]):
+        return f"Source {chosen + 1} is not real time (Source Speed {speed.sources[chosen]:.3g})"
+    if not is_real_time(speed.output):
+        return f"the Output Speed is {speed.output:.3g}, not real time"
+    return None
+
+
+def frame_hints(project: Project, clips: Sequence[VideoFileClip]) -> list[FrameHint]:
+    """The Frame Hint of every Source at the Output Speed and Output Rate in use."""
+    speed = speeds(project, clips)
+    rate = output_rate(project, clips)
+    return [
+        frame_hint(
+            playback_rate=float(clip.fps),
+            source_speed=own_speed,
+            output_speed=speed.output,
+            output_rate=rate,
+        )
+        for clip, own_speed in zip(clips, speed.sources)
+    ]
+
+
+def span_of(
+    clip: VideoFileClip, source: Source, project: Project, output_speed: float = 1.0
+) -> SourceSpan:
     """Which footage of a Source the Output shows, and its Gaps."""
     return source_span(
         duration=float(clip.duration),
         sync_point=source.sync_point,
         lead_in=project.output.lead_in,
         lead_out=project.output.lead_out,
+        source_speed=source_speed(float(clip.fps), source.record_rate),
+        output_speed=output_speed,
     )
 
 
-def _panel(clip: VideoFileClip, source: Source, edited: VideoClip, project: Project) -> VideoClip:
+def _panel(
+    clip: VideoFileClip, source: Source, edited: VideoClip, project: Project, output_speed: float
+) -> VideoClip:
     """One Source as it appears in the Output: footage with black Gaps.
 
     `edited` is the Source's picture at the size of its Panel. Gaps are joined
     end to end with the footage rather than layered under it. Layering costs
     about ten times more per frame.
     """
-    span = span_of(clip, source, project)
+    span = span_of(clip, source, project, output_speed)
     running_time = project.output.running_time
 
     def black(duration: float) -> VideoClip:
@@ -232,7 +307,14 @@ def _panel(clip: VideoFileClip, source: Source, edited: VideoClip, project: Proj
 
     if not span.has_footage:
         return black(running_time)
-    pieces = [edited.subclipped(span.file_start, span.file_end)]
+    footage = edited.subclipped(span.file_start, span.file_end)
+    file_seconds_per_output_second = (span.file_end - span.file_start) / span.footage_time
+    if not is_real_time(file_seconds_per_output_second):
+        # Sound never survives a change of speed, so it is not carried through one.
+        footage = footage.without_audio().with_effects(
+            [vfx.MultiplySpeed(factor=file_seconds_per_output_second)]
+        )
+    pieces = [footage]
     if span.front_gap > _NEGLIGIBLE:
         pieces.insert(0, black(span.front_gap))
     if span.back_gap > _NEGLIGIBLE:
@@ -320,6 +402,7 @@ def _is_untouched(clip: VideoFileClip, source: Source, panel_size: tuple[int, in
 def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
     """Compose the whole Output. `clips` are the opened Sources, in order."""
     layout, panel_sizes = _panel_sizes(project, clips)
+    output_speed = speeds(project, clips).output
 
     # Each Source is scaled once, straight to the size of its Panel.
     panels = []
@@ -329,7 +412,7 @@ def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
             picture = clip.image_transform(
                 lambda frame, source=source, size=size: edit_frame(frame, source, size)
             )
-        panels.append(_panel(clip, source, picture, project))
+        panels.append(_panel(clip, source, picture, project, output_speed))
 
     if len(panels) == 1:
         output = panels[0]
@@ -343,10 +426,8 @@ def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
             duration=project.output.running_time,
         )
 
-    chosen = project.audio_source
-    if chosen is not None and not 0 <= chosen < len(panels):
-        raise EditError("The Audio Source is not one of the Sources")
-    sound = None if chosen is None else panels[chosen].audio
+    silent = silence_reason(project, clips) is not None
+    sound = None if silent else panels[project.audio_source].audio
     output = output.without_audio() if sound is None else output.with_audio(sound)
 
     patches = overlay_patches(project.output, layout.width)
@@ -366,12 +447,17 @@ def preview(
     layout, panel_sizes = _panel_sizes(project, clips)
     last_frame_time = max(0.0, project.output.running_time - 1 / output_rate(project, clips))
     output_time = min(max(output_time, 0.0), last_frame_time)
+    speed = speeds(project, clips)
 
     panels = []
-    for clip, source, size in zip(clips, project.sources, panel_sizes):
-        span = span_of(clip, source, project)
+    for clip, source, size, own_speed in zip(clips, project.sources, panel_sizes, speed.sources):
+        span = span_of(clip, source, project, speed.output)
         file_time = file_time_at(
-            output_time, sync_point=source.sync_point, lead_in=project.output.lead_in
+            output_time,
+            sync_point=source.sync_point,
+            lead_in=project.output.lead_in,
+            source_speed=own_speed,
+            output_speed=speed.output,
         )
         if span.has_footage and span.file_start <= file_time < span.file_end:
             panels.append(edit_frame(source_frame(clip, file_time), source, size))

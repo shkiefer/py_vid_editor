@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from vid_editor.model import Corner, EditError, Quality
+from vid_editor.model import Corner, EditError, Quality, SpeedChoice
 
 FORMAT = 2
 _READABLE_FORMATS = (1, 2)  # format 1 held one Source and had no Audio Source
@@ -57,6 +57,7 @@ _SOURCE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
     ("crop_left", "crop.left", _number(int, 0)),
     ("crop_right", "crop.right", _number(int, 0)),
     ("source_width", "width", _optional(_number(int, 2))),
+    ("record_rate", "record_rate", _optional(_number(float, 0.001))),
     ("aspect_on", "aspect_override.on", _switch),
     ("aspect_width", "aspect_override.width", _number(int, 2)),
     ("aspect_height", "aspect_override.height", _number(int, 2)),
@@ -68,6 +69,8 @@ _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
     ("lead_out", "output", "lead_out", _number(float, 0)),
     ("out_width", "output", "width", _optional(_number(int, 2))),
     ("out_rate", "output", "rate", _optional(_number(float, 1, 240))),
+    ("speed_choice", "output", "speed", SpeedChoice),
+    ("speed_custom", "output", "custom_speed", _number(float, 0.001)),
     ("quality", "output", "quality", Quality),
     ("out_folder", "output", "folder", _text),
     ("out_name", "output", "file_name", _text),

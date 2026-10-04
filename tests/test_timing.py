@@ -2,7 +2,15 @@
 
 import pytest
 
-from vid_editor.timing import file_time_at, frame_at, frame_time, source_span, step_frames
+from vid_editor.timing import (
+    file_time_at,
+    frame_at,
+    frame_hint,
+    frame_time,
+    source_span,
+    source_speed,
+    step_frames,
+)
 
 
 def test_source_with_enough_footage_has_no_gaps():
@@ -134,3 +142,42 @@ def test_stepping_moves_a_sync_point_by_whole_frames():
 def test_stepping_stops_at_the_first_and_last_frames():
     assert frame_at(step_frames(0.05, -10, 29.97, 161), 29.97) == 0
     assert frame_at(step_frames(5.3, 10, 29.97, 161), 29.97) == 160
+
+
+# ---------------------------------------------------------------------- Speed
+
+
+def test_source_speed_is_playback_rate_divided_by_record_rate():
+    assert source_speed(60, 240) == 0.25
+    assert source_speed(30, None) == 1
+    assert source_speed(30, 1) == 30
+    # A Record Rate typed in round numbers still makes a real-time Source.
+    assert source_speed(29.97002997, 30) == 1
+    with pytest.raises(ValueError, match="Record Rate"):
+        source_speed(30, 0)
+
+
+def hints(output_speed):
+    """The agreed example: A recorded at 240 and played at 60, B at 30 and 30, Output Rate 60."""
+    a = frame_hint(playback_rate=60, source_speed=0.25, output_speed=output_speed, output_rate=60)
+    b = frame_hint(playback_rate=30, source_speed=1, output_speed=output_speed, output_rate=60)
+    return a, b
+
+
+def test_at_the_slowest_source_speed_no_frame_is_dropped():
+    a, b = hints(output_speed=0.25)
+    assert str(a) == "every frame shown once" and a.dropped == 0
+    # B shows 7.5 of its frames each second, so each stays for 8 frames of the Output.
+    assert b.source_frames_per_output_frame * 60 == 7.5
+    assert str(b) == "each frame held for 8 Output frames" and b.dropped == 0
+
+
+def test_at_real_time_the_slow_motion_source_has_frames_dropped():
+    a, b = hints(output_speed=1)
+    assert str(a) == "1 frame in 4 shown, 75% dropped" and a.dropped == 0.75
+    assert str(b) == "each frame held for 2 Output frames"
+
+
+def test_a_lower_output_rate_drops_frames_too():
+    hint = frame_hint(playback_rate=60, source_speed=1, output_speed=1, output_rate=24)
+    assert str(hint) == "1 frame in 2.5 shown, 60% dropped"

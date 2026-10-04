@@ -15,20 +15,24 @@ from vid_editor.model import (
     Project,
     Quality,
     Source,
+    SpeedChoice,
     TextOverlay,
 )
 from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patch
-from vid_editor.timing import frame_at, step_frames
+from vid_editor.timing import frame_at, source_speed, step_frames
 from vid_editor.render import (
     EditError,
     fit_within,
+    frame_hints,
     geometry,
     open_source,
     output_rate,
     preview,
     render,
+    silence_reason,
     source_info,
     span_of,
+    speeds,
 )
 
 st.set_page_config(page_title="Video editor", page_icon=":material/movie_edit:", layout="wide")
@@ -107,7 +111,7 @@ def new_project() -> None:
     for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render"):
         state.pop(key, None)
     state.update(
-        project_path=None, project_notice=None, saved_text=None, saved_at=None, audio_chosen=False
+        project_path=None, saved_text=None, saved_at=None, audio_chosen=False
     )
 
 
@@ -197,7 +201,7 @@ def save_project_as() -> None:
         if Path(chosen).suffix.lower() != project_file.EXTENSION:
             chosen += project_file.EXTENSION
         st.session_state.update(
-            project_path=chosen, project_notice=None, saved_text=None, saved_at=None
+            project_path=chosen, saved_text=None, saved_at=None
         )
 
 
@@ -287,6 +291,7 @@ for source_id in source_ids:
         "crop_left": 0,
         "crop_right": 0,
         "source_width": None,
+        "record_rate": None,
         "aspect_on": False,
         "aspect_width": info.width,
         "aspect_height": info.height,
@@ -305,6 +310,8 @@ for key, value in {
     "lead_out": round(infos[first_id].duration, 3) if first_id in infos else 10.0,
     "out_width": None,
     "out_rate": None,
+    "speed_choice": SpeedChoice.SLOWEST,
+    "speed_custom": 1.0,
     "quality": Quality.MEDIUM,
     "out_folder": str(first_path.parent),
     "out_name": f"{first_path.stem}_edited.mp4",
@@ -332,7 +339,7 @@ if not state.get("audio_chosen") or state.get("audio_pick") not in audio_options
 settings, result = st.columns([5, 6], gap="large")
 
 # ------------------------------------------------------------------- Settings
-size_hints = {}
+size_hints, frame_hint_slots = {}, {}
 with settings:
     with st.container(border=True):
         st.subheader("Sources")
@@ -428,6 +435,27 @@ with settings:
                         key=f"turn_right_{source_id}",
                     )
 
+                record_rate = st.number_input(
+                    "Record Rate (frames per second)",
+                    key=f"record_rate_{source_id}",
+                    min_value=0.001,
+                    step=1.0,
+                    placeholder=f"Same as the Playback Rate ({info.playback_rate:g}): real time",
+                    help="How many frames per second the camera captured of the real world. "
+                    "Leave empty for a real-time file. Fill it in for slow motion (higher than "
+                    "the Playback Rate) or timelapse (lower).",
+                )
+                own_speed = source_speed(info.playback_rate, record_rate)
+                if own_speed == 1:
+                    st.caption("Source Speed 1: this file shows the real event in real time.")
+                else:
+                    st.caption(
+                        f"Source Speed {own_speed:.3g} (Playback Rate {info.playback_rate:g} "
+                        f"divided by Record Rate {record_rate:g}): 1 s of this file shows "
+                        f"{own_speed:.3g} s of the real event."
+                    )
+                frame_hint_slots[source_id] = st.empty()
+
                 st.markdown("Crop (pixels, measured after rotation)")
                 crop_columns = st.columns(4)
                 for column, edge in zip(crop_columns, ("top", "bottom", "left", "right")):
@@ -506,6 +534,25 @@ with settings:
             placeholder="Highest Playback Rate",
             help="Leave empty to use the highest Playback Rate among the Sources.",
         )
+        speed_columns = st.columns(2)
+        speed_columns[0].selectbox(
+            "Output Speed",
+            list(SpeedChoice),
+            key="speed_choice",
+            format_func=lambda choice: choice.value,
+            help="How fast the Output shows the real event. Every Source is shown at this speed. "
+            "Slowest Source drops no frame of any Source for being too slow. The Output keeps "
+            "the same running time; a slower speed covers less of the real event.",
+        )
+        speed_columns[1].number_input(
+            "Custom Output Speed (1 is real time)",
+            key="speed_custom",
+            min_value=0.001,
+            step=0.05,
+            format="%.3f",
+            disabled=state.speed_choice != SpeedChoice.CUSTOM,
+        )
+        speed_hint = st.empty()
         st.selectbox(
             "Audio Source",
             audio_options,
@@ -515,6 +562,7 @@ with settings:
             help="The one Source whose sound is used. Sound from every other Source is discarded. "
             "The Output is silent during this Source's Gaps.",
         )
+        sound_hint = st.empty()
         st.segmented_control(
             "Quality",
             list(Quality),
@@ -693,6 +741,7 @@ with result:
                     (values["aspect_width"], values["aspect_height"]) if values["aspect_on"] else None
                 ),
                 width=values["source_width"],
+                record_rate=values["record_rate"],
             )
             for source_id, values in kept.items()
         ),
@@ -701,6 +750,11 @@ with result:
             lead_out=state.lead_out,
             width=state.out_width,
             rate=state.out_rate,
+            speed={
+                SpeedChoice.SLOWEST: None,
+                SpeedChoice.REAL_TIME: 1.0,
+                SpeedChoice.CUSTOM: state.speed_custom,
+            }[state.speed_choice],
             quality=quality,
             text_overlay=text_overlay,
             image_overlay=image_overlay,
@@ -725,12 +779,35 @@ with result:
 
     try:
         sizes = geometry(project, row_clips)
+        speed = speeds(project, row_clips)
+        hints = frame_hints(project, row_clips)
+        silent_because = silence_reason(project, row_clips)
         frame = preview(project, row_clips, output_time=state.lead_in + state.preview_offset)
-        spans = [span_of(clip, source, project) for clip, source in zip(row_clips, project.sources)]
+        spans = [
+            span_of(clip, source, project, speed.output)
+            for clip, source in zip(row_clips, project.sources)
+        ]
     except (EditError, ValueError) as error:
         st.error(str(error), icon=":material/error:")
         st.stop()
     width, height = sizes.layout.width, sizes.layout.height
+
+    # What the speeds do, shown beside the settings that cause it.
+    running_time = project.output.running_time
+    speed_hint.caption(
+        f"Output Speed {speed.output:.3g}: the {running_time:.3f} s Output shows "
+        f"{running_time * speed.output:.3f} s of the real event."
+    )
+    for source_id, hint in zip(source_ids, hints):
+        frame_hint_slots[source_id].caption(
+            f"Frame Hint at Output Speed {speed.output:.3g} and Output Rate {rate:g}: {hint}."
+        )
+    if silent_because and audio_source is not None:
+        sound_hint.warning(
+            f"The Output has no sound, because {silent_because}. Sound is kept only when "
+            "the Audio Source and the Output Speed are both real time.",
+            icon=":material/volume_off:",
+        )
 
     # Each Source's size, and what the Row does to it, shown beside its settings.
     for position, source_id in enumerate(source_ids):
@@ -798,10 +875,10 @@ with result:
 
     with st.container(key="preview"):
         st.image(fit_within(shown, *PREVIEW_BOX), width="stretch")
-    sound = "no sound" if audio_source is None else f"sound from Source {audio_source + 1}"
+    sound = "no sound" if silent_because else f"sound from Source {audio_source + 1}"
     st.caption(
-        f"Output is {width} by {height} pixels and runs for {project.output.running_time:.3f} s "
-        f"at {rate:g} frames per second, with {sound}."
+        f"Output is {width} by {height} pixels and runs for {running_time:.3f} s "
+        f"at {rate:g} frames per second, with {sound}. Output Speed {speed.output:.3g}."
     )
     st.table(
         {
@@ -810,6 +887,8 @@ with result:
             "Footage to (s)": [f"{span.file_end:.3f}" for span in spans],
             "Front Gap (s)": [f"{span.front_gap:.3f}" for span in spans],
             "Back Gap (s)": [f"{span.back_gap:.3f}" for span in spans],
+            "Source Speed": [f"{own_speed:.3g}" for own_speed in speed.sources],
+            "Frame Hint": [str(hint) for hint in hints],
         }
     )
 

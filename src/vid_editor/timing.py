@@ -117,3 +117,58 @@ def step_frames(file_time: float, frames: int, playback_rate: float, frame_count
     """The file time a given number of frames later (or earlier, if negative)."""
     target = frame_at(file_time, playback_rate) + frames
     return frame_time(min(max(target, 0), frame_count - 1), playback_rate)
+
+
+# A Record Rate this close to the Playback Rate is the same rate typed in
+# round numbers (30 for 29.97), so the Source counts as real time.
+_SAME_RATE = 0.005
+
+
+def source_speed(playback_rate: float, record_rate: float | None) -> float:
+    """How fast a Source file shows the real world, where 1 is real time."""
+    if record_rate is None:
+        return 1.0
+    if record_rate <= 0:
+        raise ValueError("The Record Rate must be greater than zero")
+    speed = playback_rate / record_rate
+    return 1.0 if abs(speed - 1) <= _SAME_RATE else speed
+
+
+def is_real_time(speed: float) -> bool:
+    return abs(speed - 1) <= 1e-9
+
+
+@dataclass(frozen=True)
+class FrameHint:
+    """What the Output Speed and Output Rate do to the frames of one Source."""
+
+    source_frames_per_output_frame: float
+    """How far the Source moves on, in its own frames, for each frame of the Output."""
+
+    @property
+    def dropped(self) -> float:
+        """The share of the Source's frames that the Output never shows."""
+        return max(0.0, 1 - 1 / self.source_frames_per_output_frame)
+
+    @property
+    def held(self) -> float:
+        """How many Output frames each Source frame stays on show for, on average."""
+        return max(1.0, 1 / self.source_frames_per_output_frame)
+
+    def __str__(self) -> str:
+        if abs(self.source_frames_per_output_frame - 1) <= _SAME_RATE:
+            return "every frame shown once"
+        if self.source_frames_per_output_frame > 1:
+            return (
+                f"1 frame in {self.source_frames_per_output_frame:.3g} shown, "
+                f"{self.dropped:.0%} dropped"
+            )
+        return f"each frame held for {self.held:.3g} Output frames"
+
+
+def frame_hint(
+    *, playback_rate: float, source_speed: float, output_speed: float, output_rate: float
+) -> FrameHint:
+    """The Frame Hint for one Source."""
+    file_seconds = _file_seconds_per_output_second(source_speed, output_speed)
+    return FrameHint(playback_rate * file_seconds / output_rate)

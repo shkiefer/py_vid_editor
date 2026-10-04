@@ -27,8 +27,11 @@ from vid_editor.render import (
     open_source,
     preview,
     render,
+    silence_reason,
     source_frame,
     source_info,
+    span_of,
+    speeds,
 )
 
 FRAME = 0.1  # one frame of the 10 frames per second test Source
@@ -457,3 +460,115 @@ def test_the_preview_shows_the_same_picture_as_the_rendered_output(
     built = build_output(project, clips).get_frame(1.0).astype(int)
     assert seen.shape == built.shape
     assert abs(seen - built).mean() < 3
+
+
+# ---------------------------------------------------------------------- Speed
+
+
+def test_the_output_speed_defaults_to_the_slowest_source_speed(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    clips = [source_clip, tall_source_clip]
+    real_time = pair(source_path, tall_source_path)
+    assert speeds(real_time, clips).output == 1
+    # The 20 frames per second Source was recorded at 40: half of real time.
+    slow = pair(source_path, tall_source_path, second={"sync_point": 1.0, "record_rate": 40})
+    assert speeds(slow, clips).sources == (1, 0.5)
+    assert speeds(slow, clips).output == 0.5
+    assert speeds(replace(slow, output=replace(slow.output, speed=1.0)), clips).output == 1
+    with pytest.raises(EditError, match="Output Speed"):
+        speeds(replace(slow, output=replace(slow.output, speed=0)), clips)
+
+
+def test_every_source_moves_through_the_event_at_the_output_speed(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    clips = [source_clip, tall_source_clip]
+    project = pair(
+        source_path,
+        tall_source_path,
+        second={"sync_point": 1.0, "record_rate": 40},
+        lead_in=1.0,
+        lead_out=1.0,
+    )
+    # Output Speed 0.5. The slow Source plays as it is; the real-time one is slowed to half.
+    assert span_of(tall_source_clip, project.sources[1], project, 0.5).file_start == 0.0
+    slowed = span_of(source_clip, project.sources[0], project, 0.5)
+    assert (slowed.file_start, slowed.file_end) == (1.5, 2.5)
+    frame = preview(project, clips, output_time=2.0 - FRAME)
+    assert file_time_shown(frame[:, :160]) == pytest.approx(2.45, abs=2 * FRAME)
+    assert file_time_shown(frame[:, 160:]) == pytest.approx(1.9, abs=2 * FRAME)
+
+    built = build_output(project, clips)
+    assert built.duration == pytest.approx(2.0)
+    late = built.get_frame(2.0 - FRAME)
+    assert file_time_shown(late[:, :160]) == pytest.approx(2.45, abs=2 * FRAME)
+    assert file_time_shown(late[:, 160:]) == pytest.approx(1.9, abs=2 * FRAME)
+
+
+def test_at_real_time_a_slow_motion_source_is_sped_up_and_runs_out_sooner(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    clips = [source_clip, tall_source_clip]
+    project = pair(
+        source_path,
+        tall_source_path,
+        second={"sync_point": 1.0, "record_rate": 40},
+        lead_in=1.0,
+        lead_out=1.0,
+        speed=1.0,
+    )
+    # 2 s of slow-motion file is 1 s of the real event: half a second each side.
+    span = span_of(tall_source_clip, project.sources[1], project, 1.0)
+    assert (span.front_gap, span.footage_time, span.back_gap) == (0.5, 1.0, 0.5)
+    assert is_black(preview(project, clips, output_time=0.25)[:, 160:])
+    middle = preview(project, clips, output_time=1.25)
+    assert file_time_shown(middle[:, 160:]) == pytest.approx(1.5, abs=2 * FRAME)
+    assert file_time_shown(middle[:, :160]) == pytest.approx(2.25, abs=2 * FRAME)
+    built = build_output(project, clips).get_frame(1.25)
+    assert file_time_shown(built[:, 160:]) == pytest.approx(1.5, abs=2 * FRAME)
+
+
+def test_sound_is_kept_only_when_the_audio_source_and_the_output_are_real_time(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    clips = [source_clip, tall_source_clip]
+    slow_second = {"sync_point": 1.0, "record_rate": 40}
+
+    real_time = pair(source_path, tall_source_path, second=slow_second, speed=1.0)
+    assert silence_reason(real_time, clips) is None
+    assert build_output(real_time, clips).audio is not None
+
+    slowest = pair(source_path, tall_source_path, second=slow_second)
+    assert "Output Speed is 0.5" in silence_reason(slowest, clips)
+    assert build_output(slowest, clips).audio is None
+
+    slow_audio = pair(
+        source_path, tall_source_path, first={"sync_point": 2.0, "record_rate": 20}, speed=1.0
+    )
+    assert "Source 1 is not real time" in silence_reason(slow_audio, clips)
+    assert build_output(slow_audio, clips).audio is None
+
+    assert "has no sound" in silence_reason(pair(source_path, tall_source_path, audio_source=1), clips)
+    assert "no Audio Source" in silence_reason(pair(source_path, tall_source_path, audio_source=None), clips)
+
+
+def test_render_changes_speed_and_keeps_the_running_time(
+    source_path, tall_source_path, source_clip, tall_source_clip, tmp_path
+):
+    project = pair(
+        source_path,
+        tall_source_path,
+        second={"sync_point": 1.0, "record_rate": 40},
+        lead_in=1.0,
+        lead_out=1.0,
+    )
+    written = render(project, [source_clip, tall_source_clip], tmp_path / "slow.mp4")
+    with VideoFileClip(str(written)) as result:
+        assert result.duration == pytest.approx(2.0, abs=0.15)
+        assert result.audio is None
+        early, late = result.get_frame(0.25), result.get_frame(1.75)
+        # The real-time Source covers 1 s of its file in the 2 s Output.
+        assert file_time_shown(early[:, :160]) == pytest.approx(1.625, abs=3 * FRAME)
+        assert file_time_shown(late[:, :160]) == pytest.approx(2.375, abs=3 * FRAME)
+        assert file_time_shown(late[:, 160:]) == pytest.approx(1.75, abs=3 * FRAME)

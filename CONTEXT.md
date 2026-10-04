@@ -133,6 +133,7 @@ _Avoid_: Padding, filler, freeze
 - Changing the crop of a size-setting **Source** recalculates every dependent **Panel** and **Crop Hint**
 - Every other **Source** has a **Panel** of already fixed size and gets a **Crop Hint** for width (after matching the **Row** height) and for height (after matching the **Column** width)
 - Each **Source** has a **Record Rate** and a **Playback Rate**, which together give its **Source Speed**
+- A **Source** whose **Record Rate** is not given is real time: its **Record Rate** is taken to be its **Playback Rate**
 - Every **Source** is shown at the **Output Speed**, so all **Panels** move through the real event at the same rate
 - The **Output Speed** defaults to the slowest **Source Speed**, at which no frame of any **Source** is dropped
 - The user can override the **Output Speed** once the **Sources** are synced

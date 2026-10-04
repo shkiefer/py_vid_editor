@@ -16,6 +16,14 @@ class Quality(Enum):
     SMALL = "Small file"
 
 
+class SpeedChoice(Enum):
+    """How the Output Speed is chosen."""
+
+    SLOWEST = "Slowest Source"
+    REAL_TIME = "Real time"
+    CUSTOM = "Custom"
+
+
 class Corner(Enum):
     """The corner of the Output an Overlay sits in."""
 
@@ -80,6 +88,9 @@ class Source:
     width: int | None = None
     """Width in pixels to resize to, applied after the crop. The height follows
     without distortion. None keeps the cropped size."""
+    record_rate: float | None = None
+    """Record Rate in frames per second. None means the file's Playback Rate,
+    which makes the Source real time."""
 
 
 @dataclass(frozen=True)
@@ -94,6 +105,9 @@ class OutputSettings:
     """Output width in pixels. None keeps the natural width of the layout."""
     rate: float | None = None
     """Output Rate in frames per second. None uses the Source's Playback Rate."""
+    speed: float | None = None
+    """Output Speed, where 1 is real time. None uses the slowest Source Speed,
+    at which no frame of any Source is dropped for being too slow."""
     quality: Quality = Quality.MEDIUM
     text_overlay: TextOverlay | None = None
     image_overlay: ImageOverlay | None = None

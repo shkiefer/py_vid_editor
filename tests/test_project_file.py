@@ -5,7 +5,7 @@ import json
 import pytest
 
 from vid_editor import project_file
-from vid_editor.model import Corner, EditError, Quality
+from vid_editor.model import Corner, EditError, Quality, SpeedChoice
 from vid_editor.project_file import ProjectSettings
 
 SOURCE = {
@@ -17,6 +17,7 @@ SOURCE = {
     "crop_left": 20,
     "crop_right": 0,
     "source_width": None,
+    "record_rate": 240.0,
     "aspect_on": False,
     "aspect_width": 1920,
     "aspect_height": 1080,
@@ -26,6 +27,8 @@ SHARED = {
     "lead_out": 3.0,
     "out_width": 960,
     "out_rate": None,
+    "speed_choice": SpeedChoice.CUSTOM,
+    "speed_custom": 0.5,
     "quality": Quality.HIGH,
     "out_folder": r"C:\videos\out",
     "out_name": "camera_a_edited.mp4",
@@ -66,6 +69,8 @@ def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     # The Audio Source is counted from 1, as Sources are on the screen.
     assert document["audio_source"] == 2
     assert document["output"]["quality"] == "High"
+    assert document["output"]["speed"] == "Custom" and document["output"]["custom_speed"] == 0.5
+    assert document["sources"][0]["record_rate"] == 240.0
     assert document["text_overlay"]["corner"] == "Bottom left"
     # An Overlay that is switched off keeps its settings.
     assert document["text_overlay"]["on"] is False

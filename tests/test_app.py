@@ -31,8 +31,16 @@ def add_source(app: AppTest, source_path: str) -> None:
     assert not app.exception
 
 
+TIMING = ["Source", "Footage from (s)", "Footage to (s)", "Front Gap (s)", "Back Gap (s)"]
+
+
 def timing_row(app: AppTest, number: int = 1) -> dict:
-    return app.table[0].value.iloc[number - 1].to_dict()
+    return app.table[0].value.iloc[number - 1][TIMING].to_dict()
+
+
+def speed_row(app: AppTest, number: int = 1) -> tuple[str, str]:
+    row = app.table[0].value.iloc[number - 1]
+    return row["Source Speed"], row["Frame Hint"]
 
 
 def captions(app: AppTest) -> str:
@@ -246,6 +254,7 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
         "rotation": 0.0,
         "crop": None,
         "width": None,
+        "record_rate": None,
         "aspect_override": None,
     }
     assert any(f"Project file: {project}" in caption.value for caption in app.caption)
@@ -556,3 +565,86 @@ def test_one_source_can_be_shown_alone_in_the_preview(source_path, tall_source_p
     assert not app.exception
     # The Output itself is unchanged; only what the Preview shows of it.
     assert "Output is 220 by 120 pixels" in captions(app)
+
+
+# ---------------------------------------------------------------------- Speed
+
+
+def test_a_real_time_source_is_shown_at_real_time_with_its_sound(source_path):
+    app = open_app(source_path)
+    assert "Source Speed 1: this file shows the real event in real time." in captions(app)
+    assert "Output Speed 1: the 4.000 s Output shows 4.000 s of the real event." in captions(app)
+    assert speed_row(app) == ("1", "every frame shown once")
+    assert "with sound from Source 1. Output Speed 1." in captions(app)
+    assert not app.warning
+
+
+def test_a_slow_motion_source_sets_the_output_speed_and_loses_its_sound(source_path):
+    app = open_app(source_path)
+    # Recorded at 40 frames per second, played at 10: a quarter of real time.
+    app.number_input(key="record_rate_1").set_value(40.0).run()
+    assert not app.exception
+    assert (
+        "Source Speed 0.25 (Playback Rate 10 divided by Record Rate 40): "
+        "1 s of this file shows 0.25 s of the real event." in captions(app)
+    )
+    assert "Output Speed 0.25: the 4.000 s Output shows 1.000 s of the real event." in captions(app)
+    assert speed_row(app) == ("0.25", "every frame shown once")
+    assert "with no sound" in captions(app)
+    assert "because Source 1 is not real time (Source Speed 0.25)" in app.warning[0].value
+
+
+def test_the_output_speed_can_be_real_time_or_custom(source_path):
+    app = open_app(source_path)
+    app.number_input(key="record_rate_1").set_value(40.0)
+    app.number_input(key="sync_point_1").set_value(2.0)
+    app.number_input(key="lead_in").set_value(0.25)
+    app.number_input(key="lead_out").set_value(0.25).run()
+    assert app.number_input(key="speed_custom").disabled
+
+    app.selectbox(key="speed_choice").set_value(app.selectbox(key="speed_choice").options[1]).run()
+    assert not app.exception
+    assert "Output Speed 1: the 0.500 s Output shows 0.500 s of the real event." in captions(app)
+    # Real time needs 4 file seconds for each second of Output: 1 s of file each side.
+    assert timing_row(app)["Footage from (s)"] == "1.000"
+    assert timing_row(app)["Footage to (s)"] == "3.000"
+    assert speed_row(app) == ("0.25", "1 frame in 4 shown, 75% dropped")
+
+    app.selectbox(key="speed_choice").set_value(app.selectbox(key="speed_choice").options[2]).run()
+    app.number_input(key="speed_custom").set_value(0.125).run()
+    assert not app.exception
+    assert speed_row(app) == ("0.25", "each frame held for 2 Output frames")
+
+
+def test_every_source_gets_a_frame_hint_at_the_slowest_source_speed(source_path, tall_source_path):
+    app = open_app(source_path, tall_source_path)
+    # The 20 frames per second Source was recorded at 80: a quarter of real time.
+    app.number_input(key="record_rate_2").set_value(80.0).run()
+    assert not app.exception
+    assert "Output Speed 0.25" in captions(app)
+    # The Output Rate is 20. The real-time 10 frames per second Source is slowed to a quarter.
+    assert speed_row(app, 1) == ("1", "each frame held for 8 Output frames")
+    assert speed_row(app, 2) == ("0.25", "every frame shown once")
+    assert (
+        "Frame Hint at Output Speed 0.25 and Output Rate 20: each frame held for 8 Output frames."
+        in captions(app)
+    )
+    assert "because the Output Speed is 0.25, not real time" in app.warning[0].value
+
+
+def test_speed_settings_are_saved_and_reopened(source_path, tmp_path, monkeypatch):
+    project = tmp_path / "speed.json"
+    first = open_app(source_path)
+    first.number_input(key="record_rate_1").set_value(40.0).run()
+    first.selectbox(key="speed_choice").set_value(first.selectbox(key="speed_choice").options[2]).run()
+    first.number_input(key="speed_custom").set_value(0.5).run()
+    save_project_as(first, project, monkeypatch)
+    assert saved(project)["sources"][0]["record_rate"] == 40.0
+    assert saved(project)["output"]["speed"] == "Custom"
+    assert saved(project)["output"]["custom_speed"] == 0.5
+
+    app = open_app()
+    open_project(app, project, monkeypatch)
+    assert app.number_input(key="record_rate_1").value == 40.0
+    assert app.number_input(key="speed_custom").value == 0.5
+    assert "Output Speed 0.5" in captions(app)
