@@ -5,9 +5,19 @@ from dataclasses import replace
 import pytest
 from conftest import file_time_shown, is_black
 from moviepy import VideoFileClip
+from PIL import Image
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 
-from vid_editor.model import Crop, OutputSettings, Project, Quality, Source
+from vid_editor.model import (
+    Corner,
+    Crop,
+    ImageOverlay,
+    OutputSettings,
+    Project,
+    Quality,
+    Source,
+    TextOverlay,
+)
 from vid_editor.render import (
     EditError,
     build_output,
@@ -168,6 +178,43 @@ def test_output_width_scales_the_picture_to_even_dimensions(source_path, source_
     assert tuple(build_output(natural, [source_clip]).size) == (160, 120)
 
 
+def test_a_text_overlay_is_drawn_in_its_corner_of_the_output(source_path, source_clip):
+    plain = preview(project_for(Source(source_path)), [source_clip], output_time=1.0)
+    project = project_for(
+        Source(source_path), text_overlay=TextOverlay("Hi", size=20, corner=Corner.BOTTOM_RIGHT)
+    )
+    frame = preview(project, [source_clip], output_time=1.0)
+    assert frame.shape == plain.shape
+    assert frame[-30:, -30:].min(axis=2).max() > 200, "no white text in the bottom right"
+    assert frame[-1, -1, 0] < 0.6 * plain[-1, -1, 0], "the box did not darken its corner"
+    assert (frame[:60] == plain[:60]).all(), "the top half was changed"
+
+
+def test_overlays_are_measured_on_the_output_after_it_is_scaled(source_path, source_clip, tmp_path):
+    logo = tmp_path / "logo.png"
+    Image.new("RGB", (40, 20), (0, 0, 255)).save(logo)
+    overlay = ImageOverlay(str(logo), corner=Corner.TOP_RIGHT, width_percent=50, background_opacity=1)
+    project = project_for(Source(source_path), width=320, image_overlay=overlay)
+    frame = preview(project, [source_clip], output_time=1.0)
+    assert frame.shape[:2] == (240, 320)
+    # The box is 160 wide: black at its edge, the blue image inside, footage beside it.
+    assert frame[0, 161:].max() < 30
+    assert frame[40, 240, 2] > 200 and frame[40, 240, 0] < 60
+    assert frame[40, 150, 1] > 200
+
+
+def test_overlays_stay_on_through_a_gap(source_path, source_clip):
+    project = project_for(
+        Source(source_path, sync_point=1.0),
+        lead_in=3.0,
+        lead_out=1.0,
+        text_overlay=TextOverlay("Hi", size=20, corner=Corner.TOP_LEFT),
+    )
+    frame = preview(project, [source_clip], output_time=1.0)
+    assert is_black(frame[60:])
+    assert frame[:30, :30].max() > 200
+
+
 def test_output_rate_defaults_to_the_playback_rate(source_path, source_clip):
     assert build_output(project_for(Source(source_path)), [source_clip]).fps == pytest.approx(10)
     chosen = project_for(Source(source_path), rate=25)
@@ -196,6 +243,18 @@ def test_render_writes_an_mp4_with_gaps_footage_and_sound(source_path, source_cl
         assert result.audio is not None
         assert is_black(result.get_frame(0.5))
         assert file_time_shown(result.get_frame(2.0)) == pytest.approx(1.0, abs=3 * FRAME)
+
+
+def test_render_writes_the_overlays_into_the_file(source_path, source_clip, tmp_path):
+    project = project_for(
+        Source(source_path), text_overlay=TextOverlay("Hi", size=24, corner=Corner.TOP_RIGHT)
+    )
+    written = render(project, [source_clip], tmp_path / "out.mp4")
+    with VideoFileClip(str(written)) as result:
+        assert result.audio is not None
+        frame = result.get_frame(1.0)
+        assert frame[:30, -30:].min(axis=2).max() > 180
+        assert file_time_shown(frame) == pytest.approx(0.0, abs=3 * FRAME)
 
 
 def test_smaller_quality_levels_make_smaller_files(source_path, source_clip, tmp_path):

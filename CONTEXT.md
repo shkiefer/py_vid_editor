@@ -146,6 +146,7 @@ _Avoid_: Padding, filler, freeze
 - **Lead-in** and **Lead-out** are measured in **Output** running time, not **Event Time**; changing the **Output Speed** keeps the **Output** the same length and changes how much of the real event it covers
 - **Overlays**, size, frame rate, quality, and file format belong to the **Output**, not to any **Source**
 - The **Output** has at most one text **Overlay** and at most one image **Overlay**; each sits in one corner and lasts the whole running time
+- An **Overlay** is sized against the finished **Output** and stays on through every **Gap**
 - The **Output** has at most one **Audio Source**; sound from every other **Source** is discarded, never mixed
 - Only a **Source** that has sound can be the **Audio Source**; the default is the first such **Source** added, and "none" is allowed
 - The **Audio Source** sound stays locked to its picture, so the **Output** is silent during that **Source**'s **Gaps**

@@ -14,7 +14,8 @@ from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips,
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
-from vid_editor.model import Crop, Project, Quality, Source
+from vid_editor.model import Crop, EditError, Project, Quality, Source
+from vid_editor.overlays import overlay_patches, stamper
 from vid_editor.timing import SourceSpan, source_span
 
 # H.264 constant rate factor per quality level. Lower is better and larger.
@@ -47,10 +48,6 @@ def _tolerate_unnamed_metadata_lines() -> None:
 
 
 _tolerate_unnamed_metadata_lines()
-
-
-class EditError(ValueError):
-    """A setting cannot be applied to the Source it belongs to."""
 
 
 @dataclass(frozen=True)
@@ -201,6 +198,10 @@ def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
     height = even(natural_height * width / natural_width)
     if (width, height) != (natural_width, natural_height):
         output = output.with_effects([vfx.Resize(new_size=(width, height))])
+
+    patches = overlay_patches(project.output, width)
+    if patches:
+        output = output.image_transform(stamper(patches, (width, height)))
     return output.with_fps(output_rate(project, clips))
 
 

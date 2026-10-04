@@ -30,6 +30,15 @@ if kind == "file":
         ],
         **options,
     )
+elif kind == "image":
+    chosen = filedialog.askopenfilename(
+        title="Choose an image",
+        filetypes=[
+            ("Image files", "*.png *.jpg *.jpeg *.bmp *.gif *.webp"),
+            ("All files", "*.*"),
+        ],
+        **options,
+    )
 else:
     chosen = filedialog.askdirectory(title="Choose a folder", **options)
 root.destroy()
@@ -52,6 +61,11 @@ def _ask(kind: str, initial_dir: str) -> str | None:
 def pick_file(initial_dir: str = "") -> str | None:
     """Ask the user for a video file. Returns None if they cancel."""
     return _ask("file", initial_dir)
+
+
+def pick_image(initial_dir: str = "") -> str | None:
+    """Ask the user for an image file. Returns None if they cancel."""
+    return _ask("image", initial_dir)
 
 
 def pick_folder(initial_dir: str = "") -> str | None:

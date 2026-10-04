@@ -8,7 +8,7 @@ Each slice ends with something runnable.
 
 1. **Environment** (done) — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
 2. **One Source, end to end** (done) — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
-3. **Overlays** — one text Overlay and one image Overlay.
+3. **Overlays** (done) — one text Overlay and one image Overlay.
 4. **Project file** — save, reopen, autosave.
 5. **Several Sources in one Row** — height matching, Gaps, Audio Source.
 6. **Frame stepper** — refine each Sync Point frame by frame.
@@ -28,7 +28,10 @@ Each slice ends with something runnable.
 - **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation), then resize (a width in pixels; the height follows).
 - **Preview size**: the Preview is shrunk to fit 1280 by 800 pixels before it is sent to the browser, and shown no taller than 55% of the window height.
 - **Output Speed choices**: slowest Source (default), real time, or custom.
-- **Overlays**: text is white on a half-transparent black box with size and corner. Image is any file via Browse, plus a quick-pick list from `assets/logos/`, with corner, width as a percentage of the Output, and background opacity. Both default to off. Same-corner collision gives a warning.
+- **Overlays**: text is white on a half-transparent black box with size and corner. Image is any file via Browse, plus a quick-pick list from `assets/logos/`, with corner, width as a percentage of the Output, and background opacity. Both default to off. Same-corner collision gives a warning, and the text is drawn over the image.
+- **Overlay sizes**: both are measured on the finished Output, after any Output width scaling. Text size is in Output pixels. The image width is the width of its box, padding included, as a percentage of the Output width. Each box sits flush in its corner, and one larger than the Output is cut off with a warning.
+- **Overlay drawing**: each Overlay is drawn once as a small picture and stamped onto every frame, rather than layered as a MoviePy clip. Both together cost roughly 5 ms per frame at 1080p.
+- **Overlay settings outlive the Source**: choosing a new Source resets the Source and Output settings but leaves the Overlays as they are.
 - **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
 - **Output location**: written to a user-chosen folder, not offered as a browser download.
 - **Project file**: plain readable text, stored where the user chooses, holding Source paths and all settings.

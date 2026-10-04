@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from conftest import file_time_shown, is_black
 from moviepy import VideoFileClip
+from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 APP = str(Path(__file__).parent.parent / "streamlit_app.py")
@@ -90,6 +91,52 @@ def test_resizing_the_source_reports_both_sizes_and_sets_the_output_size(source_
         for caption in app.caption
     )
     assert any("Output is 40 by 60" in caption.value for caption in app.caption)
+
+
+def test_overlays_are_off_until_switched_on_and_then_report_their_size(source_path):
+    app = open_app(source_path)
+    assert not app.toggle(key="text_on").value and not app.toggle(key="image_on").value
+    assert app.text_area(key="text_value").disabled
+
+    app.toggle(key="text_on").set_value(True).run()
+    assert not app.exception
+    # The default text at 30 pixels is wider than the 160 pixel test Output.
+    assert any("larger than the 160 by 120 Output" in warning.value for warning in app.warning)
+
+    app.text_area(key="text_value").set_value("Hi")
+    app.number_input(key="text_size").set_value(12).run()
+    assert not app.warning
+    assert any("The text box is" in caption.value for caption in app.caption)
+
+    app.text_area(key="text_value").set_value("").run()
+    assert any("Type some text" in caption.value for caption in app.caption)
+
+
+def test_overlays_sharing_a_corner_give_a_warning(source_path, tmp_path):
+    logo = tmp_path / "logo.png"
+    Image.new("RGB", (40, 20), (0, 0, 255)).save(logo)
+    app = open_app(source_path)
+    app.toggle(key="image_on").set_value(True).run()
+    assert any("Choose an image file" in caption.value for caption in app.caption)
+
+    app.text_input(key="image_path").set_value(str(logo)).run()
+    assert not app.exception and not app.warning
+    assert any("The image box is 40 by 22 pixels" in caption.value for caption in app.caption)
+
+    app.toggle(key="text_on").set_value(True).run()
+    app.text_area(key="text_value").set_value("Hi")
+    app.number_input(key="text_size").set_value(12)
+    app.selectbox(key="text_corner").set_value(app.session_state["image_corner"]).run()
+    assert not app.exception
+    assert any("Both Overlays are in the top left corner" in warning.value for warning in app.warning)
+
+
+def test_a_missing_overlay_image_is_reported_without_crashing(source_path, tmp_path):
+    app = open_app(source_path)
+    app.toggle(key="image_on").set_value(True).run()
+    app.text_input(key="image_path").set_value(str(tmp_path / "missing.png")).run()
+    assert not app.exception
+    assert "No image found" in app.error[0].value
 
 
 def test_zero_running_time_is_reported(source_path):

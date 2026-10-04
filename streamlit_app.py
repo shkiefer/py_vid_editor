@@ -5,8 +5,18 @@ from pathlib import Path
 
 import streamlit as st
 
-from vid_editor.dialogs import pick_file, pick_folder
-from vid_editor.model import Crop, OutputSettings, Project, Quality, Source
+from vid_editor.dialogs import pick_file, pick_folder, pick_image
+from vid_editor.model import (
+    Corner,
+    Crop,
+    ImageOverlay,
+    OutputSettings,
+    Project,
+    Quality,
+    Source,
+    TextOverlay,
+)
+from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patch
 from vid_editor.render import (
     EditError,
     build_output,
@@ -47,6 +57,18 @@ def browse_output_folder() -> None:
     chosen = pick_folder(st.session_state.get("out_folder", ""))
     if chosen:
         st.session_state.out_folder = chosen
+
+
+def browse_image() -> None:
+    current = st.session_state.get("image_path", "")
+    chosen = pick_image(str(Path(current).parent) if current else str(LOGO_FOLDER))
+    if chosen:
+        st.session_state.image_path = chosen
+
+
+def use_logo() -> None:
+    if st.session_state.logo_pick:
+        st.session_state.image_path = str(st.session_state.logo_pick)
 
 
 def turn(degrees: float) -> None:
@@ -104,6 +126,20 @@ if st.session_state.get("loaded_path") != path:
         preview_offset=0.0,
         last_render=None,
     )
+
+# Overlays belong to the Output, so a newly chosen Source leaves them alone.
+for key, value in {
+    "text_on": False,
+    "text_value": "Proprietary – Do Not Distribute",
+    "text_size": 30,
+    "text_corner": Corner.BOTTOM_LEFT,
+    "image_on": False,
+    "image_path": "",
+    "image_corner": Corner.TOP_LEFT,
+    "image_width": 25.0,
+    "image_opacity": 0.5,
+}.items():
+    st.session_state.setdefault(key, value)
 
 st.caption(
     f"{info.width} by {info.height} pixels, {info.duration:.3f} s long, "
@@ -214,7 +250,105 @@ with settings:
             )
         st.text_input("Output file name", key="out_name")
 
+    with st.container(border=True):
+        st.subheader("Overlays")
+        st.toggle(
+            "Text Overlay",
+            key="text_on",
+            help="White text on a half-transparent black box, in one corner for the whole Output.",
+        )
+        text_off = not st.session_state.text_on
+        st.text_area(
+            "Text", key="text_value", height=68, disabled=text_off, help="Press Enter for a new line."
+        )
+        text_columns = st.columns(2)
+        text_columns[0].number_input(
+            "Text size (px)",
+            key="text_size",
+            min_value=4,
+            step=2,
+            disabled=text_off,
+            help="Measured in Output pixels, so the same size looks larger on a narrower Output.",
+        )
+        text_columns[1].selectbox(
+            "Text corner",
+            list(Corner),
+            key="text_corner",
+            format_func=lambda corner: corner.value,
+            disabled=text_off,
+        )
+        text_hint = st.empty()
+
+        st.toggle(
+            "Image Overlay",
+            key="image_on",
+            help="An image such as a logo on a black box, in one corner for the whole Output.",
+        )
+        image_off = not st.session_state.image_on
+        logos = sorted(
+            file for file in LOGO_FOLDER.glob("*") if file.suffix.lower() in IMAGE_TYPES
+        )
+        if logos:
+            st.selectbox(
+                "Quick pick from assets/logos",
+                logos,
+                key="logo_pick",
+                index=None,
+                format_func=lambda file: file.name,
+                placeholder="Choose a logo",
+                on_change=use_logo,
+                disabled=image_off,
+            )
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            st.text_input("Image file", key="image_path", disabled=image_off)
+            st.button(
+                "Browse",
+                icon=":material/folder_open:",
+                on_click=browse_image,
+                key="browse_image",
+                disabled=image_off,
+            )
+        image_columns = st.columns(3)
+        image_columns[0].selectbox(
+            "Image corner",
+            list(Corner),
+            key="image_corner",
+            format_func=lambda corner: corner.value,
+            disabled=image_off,
+        )
+        image_columns[1].number_input(
+            "Width (% of Output)",
+            key="image_width",
+            min_value=1.0,
+            max_value=100.0,
+            step=1.0,
+            disabled=image_off,
+            help="Width of the box holding the image, as a percentage of the Output width.",
+        )
+        image_columns[2].number_input(
+            "Background opacity",
+            key="image_opacity",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            disabled=image_off,
+            help="The black box behind the image: 0 is clear, 1 is solid black.",
+        )
+        image_hint = st.empty()
+        corner_warning = st.empty()
+
 state = st.session_state
+text_overlay = None
+if state.text_on and state.text_value.strip():
+    text_overlay = TextOverlay(text=state.text_value, size=state.text_size, corner=state.text_corner)
+image_overlay = None
+if state.image_on and state.image_path.strip():
+    image_overlay = ImageOverlay(
+        path=state.image_path.strip().strip('"'),
+        corner=state.image_corner,
+        width_percent=state.image_width,
+        background_opacity=state.image_opacity,
+    )
 project = Project(
     sources=(
         Source(
@@ -232,6 +366,8 @@ project = Project(
         width=state.out_width,
         rate=state.out_rate,
         quality=state.quality or Quality.MEDIUM,
+        text_overlay=text_overlay,
+        image_overlay=image_overlay,
     ),
 )
 
@@ -249,6 +385,17 @@ else:
             f"({source_width / cropped_width:.0%} of that size)"
         )
     size_hint.caption(hint + ".")
+
+if state.text_on and text_overlay is None:
+    text_hint.caption("Type some text to show the text Overlay.")
+if state.image_on and image_overlay is None:
+    image_hint.caption("Choose an image file to show the image Overlay.")
+if text_overlay and image_overlay and text_overlay.corner == image_overlay.corner:
+    corner_warning.warning(
+        f"Both Overlays are in the {text_overlay.corner.value.lower()} corner, "
+        "so the text is drawn over the image.",
+        icon=":material/warning:",
+    )
 
 # -------------------------------------------------------- Preview and render
 with result:
@@ -275,6 +422,28 @@ with result:
     except (EditError, ValueError) as error:
         st.error(str(error), icon=":material/error:")
         st.stop()
+
+    # Each Overlay's size against the Output, shown beside its settings.
+    for overlay, hint_slot, name in (
+        (text_overlay, text_hint, "text"),
+        (image_overlay, image_hint, "image"),
+    ):
+        if overlay is None:
+            continue
+        picture = text_patch(overlay) if name == "text" else image_patch(overlay, width)
+        box_height, box_width = picture.shape[:2]
+        if box_width > width or box_height > height:
+            hint_slot.warning(
+                f"The {name} box is {box_width} by {box_height} pixels, larger than the "
+                f"{width} by {height} Output, so it is cut off.",
+                icon=":material/warning:",
+            )
+        else:
+            hint_slot.caption(
+                f"The {name} box is {box_width} by {box_height} pixels: "
+                f"{box_width / width:.0%} of the Output width and "
+                f"{box_height / height:.0%} of its height."
+            )
 
     with st.container(key="preview"):
         st.image(fit_within(frame, *PREVIEW_BOX), width="stretch")

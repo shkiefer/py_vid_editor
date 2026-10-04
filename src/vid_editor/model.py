@@ -4,12 +4,55 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+class EditError(ValueError):
+    """A setting cannot be applied to the Source or Output it belongs to."""
+
+
 class Quality(Enum):
     """Named quality levels for the Output file."""
 
     HIGH = "High"
     MEDIUM = "Medium"
     SMALL = "Small file"
+
+
+class Corner(Enum):
+    """The corner of the Output an Overlay sits in."""
+
+    TOP_LEFT = "Top left"
+    TOP_RIGHT = "Top right"
+    BOTTOM_LEFT = "Bottom left"
+    BOTTOM_RIGHT = "Bottom right"
+
+    @property
+    def is_top(self) -> bool:
+        return self in (Corner.TOP_LEFT, Corner.TOP_RIGHT)
+
+    @property
+    def is_left(self) -> bool:
+        return self in (Corner.TOP_LEFT, Corner.BOTTOM_LEFT)
+
+
+@dataclass(frozen=True)
+class TextOverlay:
+    """White text on a half-transparent black box in one corner of the Output."""
+
+    text: str
+    size: int = 30
+    """Font size in Output pixels."""
+    corner: Corner = Corner.BOTTOM_LEFT
+
+
+@dataclass(frozen=True)
+class ImageOverlay:
+    """An image file on a black box in one corner of the Output."""
+
+    path: str
+    corner: Corner = Corner.TOP_LEFT
+    width_percent: float = 25.0
+    """Width of the box, as a percentage of the Output width."""
+    background_opacity: float = 0.5
+    """Opacity of the black box behind the image: 0 is clear, 1 is solid black."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +95,8 @@ class OutputSettings:
     rate: float | None = None
     """Output Rate in frames per second. None uses the Source's Playback Rate."""
     quality: Quality = Quality.MEDIUM
+    text_overlay: TextOverlay | None = None
+    image_overlay: ImageOverlay | None = None
 
     @property
     def running_time(self) -> float:
