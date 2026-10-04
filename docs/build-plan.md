@@ -10,7 +10,7 @@ Each slice ends with something runnable.
 2. **One Source, end to end** (done) — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
 3. **Overlays** (done) — one text Overlay and one image Overlay.
 4. **Project file** (done) — save, reopen, autosave.
-5. **Several Sources in one Row** — height matching, Gaps, Audio Source.
+5. **Several Sources in one Row** (done) — height matching, Gaps, Audio Source.
 6. **Frame stepper** — refine each Sync Point frame by frame.
 7. **Speed** — Record Rate, Output Speed, Output Rate, Frame Hint.
 8. **Draft render.**
@@ -35,10 +35,15 @@ Each slice ends with something runnable.
 - **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
 - **Output location**: written to a user-chosen folder, not offered as a browser download.
 - **Project file**: plain readable text (JSON), stored where the user chooses, holding Source paths and all settings, including the Output folder and file name and the settings of an Overlay that is switched off.
-- **Saving**: a Project has no file until Save Project as gives it one. From then on every change is written to that file, including a setting the Preview rejects. The file is replaced in one step, so a failed save never leaves half a file.
+- **Saving**: a Project has no file until Save Project as gives it one. From then on every change is written to that file, including a setting the Preview rejects and changes made while a Source file is missing. The file is replaced in one step, so a failed save never leaves half a file.
 - **Opening**: a setting the file does not mention takes its usual starting value, so older files still open. A value that cannot be used stops the file from opening and names the value.
-- **Moved Source**: when an opened Project's Source file is not found, the settings wait and nothing is saved until the file is located; they are then applied to it and the new location is saved.
-- **Another Source**: while there is one Source per Project, choosing a different Source starts a new, unsaved Project and leaves the open Project file as it was. Slice 5 replaces this with adding Sources to the Project.
+- **Moved Source**: when a Source file is not found, that Source's settings are kept until the file is located; they are then applied to it and the new location is saved. The other Sources stay usable, but there is no Preview until every Source is found.
+- **Adding and removing Sources**: each Source added goes to the right-hand end of the Row, and any Source can be removed. New Project clears the screen and lets go of the Project file without changing it. Changing a Source's file path keeps its settings, which is how a moved file is located; a different video is added as a new Source.
+- **Row height**: the first Source sets the Row height, after its own resize. Every other Source is scaled to that height, so its own resize is switched off. With no Output width the first Source is not scaled at all. Each Source is scaled once, straight to the size of its Panel, and Panel edges are rounded one by one so the widths add up to an even Output width.
+- **Joining Panels**: Panels are joined side by side as plain arrays rather than layered as MoviePy clips.
+- **Audio Source choice**: the first Source with sound, until the user picks another or "No sound". The Project file stores it as a Source number counted from 1.
+- **Output Rate**: left empty it follows the highest Playback Rate among the Sources.
+- **Project file format 2** holds several Sources and the Audio Source. Format 1 files still open.
 - **Draft**: written to a temporary folder and replaced each time. Both Draft and full render show progress.
 - **Code shape**: timing and layout arithmetic are plain functions with automated tests, kept apart from the Streamlit screens.
 
@@ -46,7 +51,7 @@ Each slice ends with something runnable.
 
 - **Rotation by an angle that is not a quarter turn is slow.** On a 1080p Source it costs roughly 110 ms per frame, against roughly 10 ms for a plain, cropped, or quarter-turned Source. The cost is in Pillow's image rotation. OpenCV would cut it to a few milliseconds but adds a dependency; not adopted yet.
 - **Scaling to an Output width costs roughly 40 ms per frame at 1080p**, also in Pillow.
-- **One Source keeps its own sound** until the Audio Source selector arrives in slice 5.
+- **Each Source scaled to fit its Panel costs roughly 40 ms per frame at 1080p.** Two 1080p Sources in a 1280 wide Output took about 90 ms per frame, so a 7 s Output at 60 frames per second rendered in about 40 s.
 
 - **A trim that starts partway through a file can show the Source frame one before the expected one.** Frame-exact Sync Points arrive with the frame stepper in slice 6.
 - **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.

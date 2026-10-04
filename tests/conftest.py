@@ -53,3 +53,32 @@ def source_path(tmp_path_factory) -> str:
 def source_clip(source_path):
     with VideoFileClip(source_path) as clip:
         yield clip
+
+
+TALL_DURATION = 2.0
+TALL_SIZE = (100, 200)
+
+
+def _tall_frame(t: float) -> np.ndarray:
+    """A blue frame whose red level encodes its time, like the first Source."""
+    width, height = TALL_SIZE
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:, :, 0] = int(60 + 40 * t)
+    frame[:, :, 2] = 255
+    return frame
+
+
+@pytest.fixture(scope="session")
+def tall_source_path(tmp_path_factory) -> str:
+    """A 2 second, 100 by 200, 20 frames per second Source with no sound."""
+    path = tmp_path_factory.mktemp("sources") / "tall.mp4"
+    VideoClip(_tall_frame, duration=TALL_DURATION).write_videofile(
+        str(path), fps=20, codec="libx264", ffmpeg_params=["-crf", "10"], logger=None
+    )
+    return str(path)
+
+
+@pytest.fixture
+def tall_source_clip(tall_source_path):
+    with VideoFileClip(tall_source_path) as clip:
+        yield clip

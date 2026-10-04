@@ -108,4 +108,7 @@ class Project:
     """The Sources and settings that produce one Output."""
 
     sources: tuple[Source, ...]
+    """Left to right in the Row. The first sets the Row height."""
     output: OutputSettings
+    audio_source: int | None = 0
+    """Position in `sources` of the Audio Source. None gives an Output with no sound."""

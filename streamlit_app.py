@@ -1,6 +1,6 @@
 """Video editor screen. Run with: uv run streamlit run streamlit_app.py"""
 
-from dataclasses import replace
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
@@ -20,10 +20,10 @@ from vid_editor.model import (
 from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patch
 from vid_editor.render import (
     EditError,
-    build_output,
-    edited_size,
     fit_within,
+    geometry,
     open_source,
+    output_rate,
     preview,
     render,
     source_info,
@@ -40,18 +40,90 @@ st.html(
     "{max-height: 55vh; object-fit: contain; object-position: left top;}</style>"
 )
 
+# Each Source on the screen has a number of its own, counted from 1, that its
+# settings are kept under. This stands for "no Audio Source" in the same list.
+NO_SOUND = 0
 
-@st.cache_resource(max_entries=4, on_release=lambda clip: clip.close(), show_spinner="Opening video")
+OVERLAY_DEFAULTS = {
+    "text_on": False,
+    "text_value": "Proprietary – Do Not Distribute",
+    "text_size": 30,
+    "text_corner": Corner.BOTTOM_LEFT,
+    "image_on": False,
+    "image_path": "",
+    "image_corner": Corner.TOP_LEFT,
+    "image_width": 25.0,
+    "image_opacity": 0.5,
+}
+
+
+@st.cache_resource(max_entries=16, on_release=lambda clip: clip.close(), show_spinner="Opening video")
 def cached_source(path: str, modified: float):
     """An opened Source, reused across reruns until the file changes."""
     return open_source(path)
 
 
-def browse_source() -> None:
-    current = st.session_state.get("source_path", "")
-    chosen = dialogs.pick_file(str(Path(current).parent) if current else "")
+def opened(path: str):
+    if not Path(path).is_file():
+        raise EditError(f"No file found at {path}")
+    return cached_source(path, Path(path).stat().st_mtime)
+
+
+def clean(path: str) -> str:
+    return path.strip().strip('"')
+
+
+def add_source(path: str, kept: dict | None = None) -> None:
+    """Put a Source at the right-hand end of the Row.
+
+    `kept` holds settings from a Project file. They wait there until the
+    Source's file is opened, which may be after it has been located.
+    """
+    state = st.session_state
+    source_id = state.get("next_source_id", 1)
+    state.next_source_id = source_id + 1
+    state.source_ids = [*state.get("source_ids", []), source_id]
+    state[f"path_{source_id}"] = path
+    state[f"kept_{source_id}"] = kept or {}
+
+
+def remove_source(source_id: int) -> None:
+    state = st.session_state
+    state.source_ids = [other for other in state.source_ids if other != source_id]
+    state.pop(f"path_{source_id}", None)
+    state.pop(f"kept_{source_id}", None)
+    if not state.source_ids:
+        # The next Source added is the first of a new Row, and sets the Output up afresh.
+        for key in ("lead_in", "lead_out", "out_width", "out_rate", "out_folder", "out_name"):
+            state.pop(key, None)
+        state.audio_chosen = False
+
+
+def new_project() -> None:
+    state = st.session_state
+    for source_id in list(state.get("source_ids", [])):
+        remove_source(source_id)
+    for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render"):
+        state.pop(key, None)
+    state.update(
+        project_path=None, project_notice=None, saved_text=None, saved_at=None, audio_chosen=False
+    )
+
+
+def browse_to_add() -> None:
+    state = st.session_state
+    source_ids = state.get("source_ids", [])
+    start = str(Path(state[f"path_{source_ids[-1]}"]).parent) if source_ids else ""
+    chosen = dialogs.pick_file(start)
     if chosen:
-        st.session_state.source_path = chosen
+        state.add_path = chosen
+
+
+def browse_to_locate(source_id: int) -> None:
+    current = st.session_state[f"path_{source_id}"]
+    chosen = dialogs.pick_file(str(Path(current).parent))
+    if chosen:
+        st.session_state[f"path_{source_id}"] = chosen
 
 
 def browse_output_folder() -> None:
@@ -72,13 +144,20 @@ def use_logo() -> None:
         st.session_state.image_path = str(st.session_state.logo_pick)
 
 
-def turn(degrees: float) -> None:
-    st.session_state.rotation = (st.session_state.rotation + degrees) % 360
+def turn(source_id: int, degrees: float) -> None:
+    key = f"rotation_{source_id}"
+    st.session_state[key] = (st.session_state[key] + degrees) % 360
+
+
+def audio_was_chosen() -> None:
+    st.session_state.audio_chosen = True
 
 
 def project_folder() -> str:
-    """Where a Project dialog starts: beside the Project file, or else the Source."""
-    current = st.session_state.get("project_path") or st.session_state.get("loaded_path")
+    """Where a Project dialog starts: beside the Project file, or else the first Source."""
+    state = st.session_state
+    source_ids = state.get("source_ids", [])
+    current = state.get("project_path") or (state[f"path_{source_ids[0]}"] if source_ids else "")
     return str(Path(current).parent) if current else ""
 
 
@@ -91,15 +170,16 @@ def open_project() -> None:
     except EditError as error:
         st.session_state.project_error = str(error)
         return
-    # The settings wait here until their Source file is opened, or located.
-    st.session_state.update(
-        project_path=chosen,
-        project_notice=None,
-        pending_settings=settings,
-        source_path=settings["source_path"],
-        saved_text=None,
-        saved_at=None,
+    state = st.session_state
+    new_project()
+    for source in settings.sources:
+        add_source(source["path"], {key: value for key, value in source.items() if key != "path"})
+    state.update(settings.shared)
+    state.audio_pick = (
+        NO_SOUND if settings.audio_source is None else state.source_ids[settings.audio_source]
     )
+    state.audio_chosen = True
+    state.project_path = chosen
 
 
 def save_project_as() -> None:
@@ -119,15 +199,30 @@ def show_project_status(slot) -> None:
         slot.caption(f"Project file: {state.project_path}. Every change is saved automatically{saved}.")
     else:
         slot.caption(
-            state.get("project_notice")
-            or "This Project is not saved. Choose Save Project as to keep its settings in a file."
+            "This Project is not saved. Choose Save Project as to keep its settings in a file."
         )
 
+
+state = st.session_state
+state.setdefault("source_ids", [])
+
+# A path typed or browsed for is added as a Source here, before the box that
+# holds it is drawn, so that the box can be emptied again.
+new_path = clean(state.get("add_path", ""))
+if new_path:
+    state.add_path = ""
+    try:
+        opened(new_path)
+    except EditError as error:
+        state.add_error = str(error)
+    else:
+        add_source(new_path)
 
 st.title("Video editor")
 
 # -------------------------------------------------------------------- Project
 with st.container(horizontal=True, vertical_alignment="center"):
+    st.button("New Project", icon=":material/note_add:", on_click=new_project, key="new_project")
     st.button(
         "Open Project", icon=":material/file_open:", on_click=open_project, key="open_project"
     )
@@ -136,167 +231,213 @@ with st.container(horizontal=True, vertical_alignment="center"):
         icon=":material/save_as:",
         on_click=save_project_as,
         key="save_project_as",
-        disabled=not st.session_state.get("source_path", "").strip(),
+        disabled=not state.source_ids,
     )
     project_status = st.empty()
 show_project_status(project_status)
-if project_error := st.session_state.pop("project_error", None):
+if project_error := state.pop("project_error", None):
     st.error(project_error, icon=":material/error:")
 
-# ---------------------------------------------------------------- Source file
+# -------------------------------------------------------------- Add a Source
 with st.container(horizontal=True, vertical_alignment="bottom"):
     st.text_input(
-        "Source file",
-        key="source_path",
+        "Add a Source file",
+        key="add_path",
         placeholder=r"C:\videos\camera_a.mp4",
-        help="Path to a video file on this computer.",
+        help="Type or paste the path of a video file on this computer and press Enter, "
+        "or use Browse. Each Source added goes to the right of the ones before it.",
     )
-    st.button("Browse", icon=":material/folder_open:", on_click=browse_source, key="browse_source")
+    st.button("Browse", icon=":material/folder_open:", on_click=browse_to_add, key="browse_source")
+if add_error := state.pop("add_error", None):
+    st.error(add_error, icon=":material/error:")
 
-path = st.session_state.source_path.strip().strip('"')
-if not path:
-    st.info("Choose a Source file to begin.", icon=":material/video_file:")
+source_ids: list[int] = state.source_ids
+if not source_ids:
+    st.info("Add a Source file to begin.", icon=":material/video_file:")
     st.stop()
 
-try:
-    if not Path(path).is_file():
-        raise EditError(f"No file found at {path}")
-    clip = cached_source(path, Path(path).stat().st_mtime)
-except EditError as error:
-    st.error(str(error), icon=":material/error:")
-    if "pending_settings" in st.session_state:
-        st.info(
-            "The Project keeps this Source's settings. Choose where the file is now.",
-            icon=":material/search:",
-        )
-    st.stop()
+# ------------------------------------------------------------ Open the Sources
+paths = {source_id: clean(state[f"path_{source_id}"]) for source_id in source_ids}
+numbers = {source_id: position + 1 for position, source_id in enumerate(source_ids)}
+clips, infos, problems = {}, {}, {}
+for source_id in source_ids:
+    try:
+        clips[source_id] = opened(paths[source_id])
+    except EditError as error:
+        problems[source_id] = str(error)
+        continue
+    info = infos[source_id] = source_info(clips[source_id])
+    # A Source new to the screen starts from its file. One that an opened
+    # Project was holding settings for takes those instead.
+    kept = state.get(f"kept_{source_id}", {})
+    fresh = {
+        "sync_point": 0.0,
+        "rotation": 0.0,
+        "crop_top": 0,
+        "crop_bottom": 0,
+        "crop_left": 0,
+        "crop_right": 0,
+        "source_width": None,
+        "aspect_on": False,
+        "aspect_width": info.width,
+        "aspect_height": info.height,
+    }
+    for name, value in fresh.items():
+        if f"{name}_{source_id}" not in state:
+            state[f"{name}_{source_id}"] = kept.get(name, value)
+    sync_key = f"sync_point_{source_id}"
+    state[sync_key] = min(state[sync_key], info.duration)
 
-info = source_info(clip)
-
-# A newly chosen Source resets every setting to match that file. A Source that
-# an opened Project was waiting for then takes the Project's settings instead.
-pending = st.session_state.pop("pending_settings", None)
-if pending is not None or st.session_state.get("loaded_path") != path:
-    if pending is None and st.session_state.get("project_path"):
-        st.session_state.project_notice = (
-            "The Source changed, so this is a new Project and is not saved. "
-            f"{st.session_state.project_path} was left as it was."
-        )
-        st.session_state.project_path = None
-        show_project_status(project_status)
-    st.session_state.update(
-        loaded_path=path,
-        sync_point=0.0,
-        rotation=0.0,
-        crop_top=0,
-        crop_bottom=0,
-        crop_left=0,
-        crop_right=0,
-        source_width=None,
-        aspect_on=False,
-        aspect_width=info.width,
-        aspect_height=info.height,
-        lead_in=0.0,
-        lead_out=round(info.duration, 3),
-        out_width=None,
-        out_rate=info.playback_rate,
-        quality=Quality.MEDIUM,
-        out_folder=str(Path(path).parent),
-        out_name=f"{Path(path).stem}_edited.mp4",
-        preview_offset=0.0,
-        last_render=None,
-    )
-    if pending is not None:
-        pending = {key: value for key, value in pending.items() if key != "source_path"}
-        if "sync_point" in pending:
-            pending["sync_point"] = min(pending["sync_point"], info.duration)
-        st.session_state.update(pending)
-
-# Overlays belong to the Output, so a newly chosen Source leaves them alone.
+# The first Source sets the Output up. Overlays start switched off.
+first_id = source_ids[0]
+first_path = Path(paths[first_id])
 for key, value in {
-    "text_on": False,
-    "text_value": "Proprietary – Do Not Distribute",
-    "text_size": 30,
-    "text_corner": Corner.BOTTOM_LEFT,
-    "image_on": False,
-    "image_path": "",
-    "image_corner": Corner.TOP_LEFT,
-    "image_width": 25.0,
-    "image_opacity": 0.5,
+    "lead_in": 0.0,
+    "lead_out": round(infos[first_id].duration, 3) if first_id in infos else 10.0,
+    "out_width": None,
+    "out_rate": None,
+    "quality": Quality.MEDIUM,
+    "out_folder": str(first_path.parent),
+    "out_name": f"{first_path.stem}_edited.mp4",
+    "preview_offset": 0.0,
+    "last_render": None,
+    **OVERLAY_DEFAULTS,
 }.items():
-    st.session_state.setdefault(key, value)
+    state.setdefault(key, value)
 
-st.caption(
-    f"{info.width} by {info.height} pixels, {info.duration:.3f} s long, "
-    f"Playback Rate {info.playback_rate:g} frames per second, "
-    f"{'has sound' if info.has_sound else 'no sound'}."
-)
+
+def source_label(source_id: int) -> str:
+    return f"Source {numbers[source_id]}: {Path(paths[source_id]).name}"
+
+
+# The Audio Source is the first Source with sound, until the user chooses.
+with_sound = [source_id for source_id in source_ids if source_id in infos and infos[source_id].has_sound]
+audio_options = [NO_SOUND] + [
+    source_id
+    for source_id in source_ids
+    if source_id in with_sound or (source_id in problems and source_id == state.get("audio_pick"))
+]
+if not state.get("audio_chosen") or state.get("audio_pick") not in audio_options:
+    state.audio_pick = with_sound[0] if with_sound else NO_SOUND
 
 settings, result = st.columns([5, 6], gap="large")
 
 # ------------------------------------------------------------------- Settings
+size_hints = {}
 with settings:
     with st.container(border=True):
-        st.subheader("Source")
-        st.number_input(
-            "Sync Point (s)",
-            key="sync_point",
-            min_value=0.0,
-            max_value=info.duration,
-            step=0.1,
-            format="%.3f",
-            help="The time in this file at which the Sync Event is seen.",
-        )
-        with st.container(horizontal=True, vertical_alignment="bottom"):
-            st.number_input(
-                "Rotation (degrees, anticlockwise)",
-                key="rotation",
-                min_value=0.0,
-                max_value=360.0,
-                step=1.0,
-                format="%.1f",
-                help="Any angle. Angles that are not quarter turns leave black corners to crop away.",
-            )
-            st.button(
-                "Turn left", icon=":material/rotate_left:", on_click=turn, args=(90,), key="turn_left"
-            )
-            st.button(
-                "Turn right",
-                icon=":material/rotate_right:",
-                on_click=turn,
-                args=(-90,),
-                key="turn_right",
-            )
+        st.subheader("Sources")
+        tabs = st.tabs([source_label(source_id) for source_id in source_ids])
+        for tab, source_id in zip(tabs, source_ids):
+            with tab:
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    st.text_input(
+                        "File",
+                        key=f"path_{source_id}",
+                        help="Change this only when the file has moved. The Source keeps its settings.",
+                    )
+                    st.button(
+                        "Browse",
+                        icon=":material/folder_open:",
+                        on_click=browse_to_locate,
+                        args=(source_id,),
+                        key=f"locate_{source_id}",
+                    )
+                    st.button(
+                        "Remove",
+                        icon=":material/delete:",
+                        on_click=remove_source,
+                        args=(source_id,),
+                        key=f"remove_{source_id}",
+                    )
+                if source_id in problems:
+                    st.error(problems[source_id], icon=":material/error:")
+                    st.info(
+                        "The Project keeps this Source's settings. Choose where the file is now.",
+                        icon=":material/search:",
+                    )
+                    continue
 
-        st.markdown("Crop (pixels, measured after rotation)")
-        crop_columns = st.columns(4)
-        for column, edge in zip(crop_columns, ("top", "bottom", "left", "right")):
-            column.number_input(edge.capitalize(), key=f"crop_{edge}", min_value=0, step=10)
+                info = infos[source_id]
+                st.caption(
+                    f"{info.width} by {info.height} pixels, {info.duration:.3f} s long, "
+                    f"Playback Rate {info.playback_rate:g} frames per second, "
+                    f"{'has sound' if info.has_sound else 'no sound'}."
+                )
+                st.number_input(
+                    "Sync Point (s)",
+                    key=f"sync_point_{source_id}",
+                    min_value=0.0,
+                    max_value=info.duration,
+                    step=0.1,
+                    format="%.3f",
+                    help="The time in this file at which the Sync Event is seen.",
+                )
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    st.number_input(
+                        "Rotation (degrees, anticlockwise)",
+                        key=f"rotation_{source_id}",
+                        min_value=0.0,
+                        max_value=360.0,
+                        step=1.0,
+                        format="%.1f",
+                        help="Any angle. Angles that are not quarter turns leave black corners to crop away.",
+                    )
+                    st.button(
+                        "Turn left",
+                        icon=":material/rotate_left:",
+                        on_click=turn,
+                        args=(source_id, 90),
+                        key=f"turn_left_{source_id}",
+                    )
+                    st.button(
+                        "Turn right",
+                        icon=":material/rotate_right:",
+                        on_click=turn,
+                        args=(source_id, -90),
+                        key=f"turn_right_{source_id}",
+                    )
 
-        st.number_input(
-            "Resize to width (px)",
-            key="source_width",
-            min_value=2,
-            step=10,
-            placeholder="Cropped size",
-            help="Leave empty to keep the cropped size. Applied after the crop; "
-            "the height follows without distortion.",
-        )
-        size_hint = st.empty()
+                st.markdown("Crop (pixels, measured after rotation)")
+                crop_columns = st.columns(4)
+                for column, edge in zip(crop_columns, ("top", "bottom", "left", "right")):
+                    column.number_input(
+                        edge.capitalize(), key=f"crop_{edge}_{source_id}", min_value=0, step=10
+                    )
 
-        with st.expander("Advanced"):
-            st.toggle(
-                "Override aspect ratio",
-                key="aspect_on",
-                help="Force a width and height for a file that plays stretched. Applied before rotation.",
-            )
-            aspect_columns = st.columns(2)
-            aspect_columns[0].number_input(
-                "Forced width (px)", key="aspect_width", min_value=2, disabled=not st.session_state.aspect_on
-            )
-            aspect_columns[1].number_input(
-                "Forced height (px)", key="aspect_height", min_value=2, disabled=not st.session_state.aspect_on
-            )
+                sets_row_height = source_id == first_id
+                st.number_input(
+                    "Resize to width (px)",
+                    key=f"source_width_{source_id}",
+                    min_value=2,
+                    step=10,
+                    placeholder="Cropped size" if sets_row_height else "Matched to the Row height",
+                    disabled=not sets_row_height,
+                    help="Only for Source 1, which sets the Row height. Leave empty to keep the "
+                    "cropped size. Applied after the crop; the height follows without distortion. "
+                    "Every other Source is scaled to the Row height.",
+                )
+                size_hints[source_id] = st.empty()
+
+                with st.expander("Advanced"):
+                    aspect_on = st.toggle(
+                        "Override aspect ratio",
+                        key=f"aspect_on_{source_id}",
+                        help="Force a width and height for a file that plays stretched. Applied before rotation.",
+                    )
+                    aspect_columns = st.columns(2)
+                    aspect_columns[0].number_input(
+                        "Forced width (px)",
+                        key=f"aspect_width_{source_id}",
+                        min_value=2,
+                        disabled=not aspect_on,
+                    )
+                    aspect_columns[1].number_input(
+                        "Forced height (px)",
+                        key=f"aspect_height_{source_id}",
+                        min_value=2,
+                        disabled=not aspect_on,
+                    )
 
     with st.container(border=True):
         st.subheader("Output")
@@ -327,7 +468,22 @@ with settings:
             help="Leave empty to keep the natural size. The height follows from the picture.",
         )
         size_columns[1].number_input(
-            "Output Rate (frames per second)", key="out_rate", min_value=1.0, max_value=240.0, step=1.0
+            "Output Rate (frames per second)",
+            key="out_rate",
+            min_value=1.0,
+            max_value=240.0,
+            step=1.0,
+            placeholder="Highest Playback Rate",
+            help="Leave empty to use the highest Playback Rate among the Sources.",
+        )
+        st.selectbox(
+            "Audio Source",
+            audio_options,
+            key="audio_pick",
+            format_func=lambda source_id: "No sound" if source_id == NO_SOUND else source_label(source_id),
+            on_change=audio_was_chosen,
+            help="The one Source whose sound is used. Sound from every other Source is discarded. "
+            "The Output is silent during this Source's Gaps.",
         )
         st.segmented_control(
             "Quality",
@@ -350,7 +506,7 @@ with settings:
             key="text_on",
             help="White text on a half-transparent black box, in one corner for the whole Output.",
         )
-        text_off = not st.session_state.text_on
+        text_off = not state.text_on
         st.text_area(
             "Text", key="text_value", height=68, disabled=text_off, help="Press Enter for a new line."
         )
@@ -377,7 +533,7 @@ with settings:
             key="image_on",
             help="An image such as a logo on a black box, in one corner for the whole Output.",
         )
-        image_off = not st.session_state.image_on
+        image_off = not state.image_on
         logos = sorted(
             file for file in LOGO_FOLDER.glob("*") if file.suffix.lower() in IMAGE_TYPES
         )
@@ -430,15 +586,26 @@ with settings:
         image_hint = st.empty()
         corner_warning = st.empty()
 
-state = st.session_state
+# ------------------------------------------------------ Settings as a Project
+# Each Source's settings are also kept apart from its controls, which the
+# screen forgets whenever they are not shown, as when its file cannot be found.
+for source_id in clips:
+    state[f"kept_{source_id}"] = {
+        name: state[f"{name}_{source_id}"] for name in project_file.SOURCE_KEYS
+    }
+kept = {source_id: state.get(f"kept_{source_id}", {}) for source_id in source_ids}
+quality = state.quality or Quality.MEDIUM
+audio_source = None if state.audio_pick == NO_SOUND else source_ids.index(state.audio_pick)
 
 # Every change is saved to the Project file, once the Project has one.
 if state.get("project_path"):
-    saved_settings = {key: state[key] for key in project_file.KEYS} | {
-        "source_path": path,
-        "quality": state.quality or Quality.MEDIUM,
-    }
-    project_text = project_file.dumps(saved_settings)
+    project_text = project_file.dumps(
+        project_file.ProjectSettings(
+            sources=[{"path": paths[source_id]} | kept[source_id] for source_id in source_ids],
+            shared={key: state[key] for key in project_file.SHARED_KEYS} | {"quality": quality},
+            audio_source=audio_source,
+        )
+    )
     if project_text != state.get("saved_text"):
         try:
             project_file.write(state.project_path, project_text)
@@ -458,48 +625,11 @@ if state.text_on and state.text_value.strip():
 image_overlay = None
 if state.image_on and state.image_path.strip():
     image_overlay = ImageOverlay(
-        path=state.image_path.strip().strip('"'),
+        path=clean(state.image_path),
         corner=state.image_corner,
         width_percent=state.image_width,
         background_opacity=state.image_opacity,
     )
-project = Project(
-    sources=(
-        Source(
-            path=path,
-            sync_point=state.sync_point,
-            rotation=state.rotation,
-            crop=Crop(state.crop_top, state.crop_bottom, state.crop_left, state.crop_right),
-            aspect_override=(state.aspect_width, state.aspect_height) if state.aspect_on else None,
-            width=state.source_width,
-        ),
-    ),
-    output=OutputSettings(
-        lead_in=state.lead_in,
-        lead_out=state.lead_out,
-        width=state.out_width,
-        rate=state.out_rate,
-        quality=state.quality or Quality.MEDIUM,
-        text_overlay=text_overlay,
-        image_overlay=image_overlay,
-    ),
-)
-
-try:
-    source = project.sources[0]
-    cropped_width, cropped_height = edited_size(clip, replace(source, width=None))
-    source_width, source_height = edited_size(clip, source)
-except EditError:
-    pass  # reported beside the Preview
-else:
-    hint = f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels"
-    if (source_width, source_height) != (cropped_width, cropped_height):
-        hint += (
-            f", resized to {source_width} by {source_height} "
-            f"({source_width / cropped_width:.0%} of that size)"
-        )
-    size_hint.caption(hint + ".")
-
 if state.text_on and text_overlay is None:
     text_hint.caption("Type some text to show the text Overlay.")
 if state.image_on and image_overlay is None:
@@ -514,28 +644,85 @@ if text_overlay and image_overlay and text_overlay.corner == image_overlay.corne
 # -------------------------------------------------------- Preview and render
 with result:
     st.subheader("Preview")
+    if problems:
+        missing = " and ".join(f"Source {numbers[source_id]}" for source_id in problems)
+        st.error(f"Locate {missing} to see the Preview.", icon=":material/error:")
+        st.stop()
+
+    row_clips = [clips[source_id] for source_id in source_ids]
+    project = Project(
+        sources=tuple(
+            Source(
+                path=paths[source_id],
+                sync_point=values["sync_point"],
+                rotation=values["rotation"],
+                crop=Crop(
+                    values["crop_top"], values["crop_bottom"], values["crop_left"], values["crop_right"]
+                ),
+                aspect_override=(
+                    (values["aspect_width"], values["aspect_height"]) if values["aspect_on"] else None
+                ),
+                width=values["source_width"],
+            )
+            for source_id, values in kept.items()
+        ),
+        output=OutputSettings(
+            lead_in=state.lead_in,
+            lead_out=state.lead_out,
+            width=state.out_width,
+            rate=state.out_rate,
+            quality=quality,
+            text_overlay=text_overlay,
+            image_overlay=image_overlay,
+        ),
+        audio_source=audio_source,
+    )
     if project.output.running_time <= 0:
         st.error("Lead-in plus Lead-out must be greater than zero.", icon=":material/error:")
         st.stop()
 
+    rate = output_rate(project, row_clips)
     state.preview_offset = min(max(state.preview_offset, -state.lead_in), state.lead_out)
     st.slider(
         "Time from the Sync Event (s)",
         key="preview_offset",
         min_value=-float(state.lead_in),
         max_value=float(state.lead_out),
-        step=1 / project.output.rate,
+        step=1 / rate,
         format="%.3f",
         help="0 shows every Source at its Sync Point. Negative is before the Sync Event.",
     )
 
     try:
-        frame = preview(project, [clip], output_time=state.lead_in + state.preview_offset)
-        width, height = build_output(project, [clip]).size
-        span = span_of(clip, project.sources[0], project)
+        sizes = geometry(project, row_clips)
+        frame = preview(project, row_clips, output_time=state.lead_in + state.preview_offset)
+        spans = [span_of(clip, source, project) for clip, source in zip(row_clips, project.sources)]
     except (EditError, ValueError) as error:
         st.error(str(error), icon=":material/error:")
         st.stop()
+    width, height = sizes.layout.width, sizes.layout.height
+
+    # Each Source's size, and what the Row does to it, shown beside its settings.
+    for position, source_id in enumerate(source_ids):
+        cropped_width, cropped_height = sizes.cropped[position]
+        panel_width = sizes.layout.panel_widths[position]
+        hint = f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels"
+        if position == 0:
+            resized_width, resized_height = sizes.resized
+            if sizes.resized != sizes.cropped[0]:
+                hint += (
+                    f", resized to {resized_width} by {resized_height} "
+                    f"({resized_width / cropped_width:.0%} of that size)"
+                )
+            hint += "."
+            if len(source_ids) > 1:
+                hint += f" It sets the Row height. Its Panel is {panel_width} by {height} pixels."
+        else:
+            hint += (
+                f". Scaled to the Row height, its Panel is {panel_width} by {height} pixels "
+                f"({height / cropped_height:.0%} of that size)."
+            )
+        size_hints[source_id].caption(hint)
 
     # Each Overlay's size against the Output, shown beside its settings.
     for overlay, hint_slot, name in (
@@ -561,27 +748,29 @@ with result:
 
     with st.container(key="preview"):
         st.image(fit_within(frame, *PREVIEW_BOX), width="stretch")
+    sound = "no sound" if audio_source is None else f"sound from Source {audio_source + 1}"
     st.caption(
-        f"Output is {width} by {height} pixels and runs for {project.output.running_time:.3f} s."
+        f"Output is {width} by {height} pixels and runs for {project.output.running_time:.3f} s "
+        f"at {rate:g} frames per second, with {sound}."
     )
     st.table(
         {
-            "Source": [Path(path).name],
-            "Footage from (s)": [f"{span.file_start:.3f}"],
-            "Footage to (s)": [f"{span.file_end:.3f}"],
-            "Front Gap (s)": [f"{span.front_gap:.3f}"],
-            "Back Gap (s)": [f"{span.back_gap:.3f}"],
+            "Source": [source_label(source_id) for source_id in source_ids],
+            "Footage from (s)": [f"{span.file_start:.3f}" for span in spans],
+            "Footage to (s)": [f"{span.file_end:.3f}" for span in spans],
+            "Front Gap (s)": [f"{span.front_gap:.3f}" for span in spans],
+            "Back Gap (s)": [f"{span.back_gap:.3f}" for span in spans],
         }
     )
 
     st.subheader("Render")
-    destination = Path(state.out_folder.strip().strip('"')) / state.out_name.strip()
+    destination = Path(clean(state.out_folder)) / state.out_name.strip()
     problem = None
     if not state.out_folder.strip() or not state.out_name.strip():
         problem = "Choose an Output folder and file name."
     elif destination.suffix.lower() != ".mp4":
         problem = "The Output file name must end in .mp4."
-    elif destination.resolve() == Path(path).resolve():
+    elif any(destination.resolve() == Path(path).resolve() for path in paths.values()):
         problem = "The Output cannot replace its own Source file."
     if problem:
         st.warning(problem, icon=":material/warning:")
@@ -599,11 +788,14 @@ with result:
     ):
         bar = st.progress(0.0, text="Starting")
         try:
-            # A separate reader, so the cached Preview reader is left alone.
-            with open_source(path) as fresh_clip:
+            # Separate readers, so the cached Preview readers are left alone.
+            with ExitStack() as readers:
+                fresh_clips = [
+                    readers.enter_context(open_source(source.path)) for source in project.sources
+                ]
                 written = render(
                     project,
-                    [fresh_clip],
+                    fresh_clips,
                     destination,
                     on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
                 )

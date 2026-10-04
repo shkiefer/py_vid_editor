@@ -22,6 +22,7 @@ from vid_editor.render import (
     EditError,
     build_output,
     edited_size,
+    geometry,
     fit_within,
     open_source,
     preview,
@@ -269,3 +270,150 @@ def test_smaller_quality_levels_make_smaller_files(source_path, source_clip, tmp
 def test_render_refuses_a_file_name_that_is_not_mp4(source_path, source_clip, tmp_path):
     with pytest.raises(EditError, match=".mp4"):
         render(project_for(Source(source_path)), [source_clip], tmp_path / "out.wmv")
+
+
+# ------------------------------------------------------------ Several Sources
+
+
+def pair(source_path, tall_source_path, first=None, second=None, audio_source=0, **output) -> Project:
+    """The 160 by 120 Source with sound on the left, the 100 by 200 silent one on the right."""
+    output.setdefault("lead_in", 1.0)
+    output.setdefault("lead_out", 1.0)
+    return Project(
+        sources=(
+            Source(source_path, **(first or {"sync_point": 2.0})),
+            Source(tall_source_path, **(second or {"sync_point": 1.0})),
+        ),
+        output=OutputSettings(**output),
+        audio_source=audio_source,
+    )
+
+
+def test_sources_sit_side_by_side_matched_to_the_first_height(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    project = pair(source_path, tall_source_path)
+    clips = [source_clip, tall_source_clip]
+    frame = preview(project, clips, output_time=1.0)
+    assert frame.shape[:2] == (120, 220)
+    # Left Panel: the first Source, green quadrant top left. Right Panel: the blue Source.
+    assert frame[30, 40, 1] > 200 and frame[30, 40, 2] < 60
+    assert frame[60, 190, 2] > 200 and frame[60, 190, 1] < 60
+
+    sizes = geometry(project, clips)
+    assert sizes.cropped == ((160, 120), (100, 200))
+    assert sizes.layout.panel_widths == (160, 60)
+    assert (sizes.layout.width, sizes.layout.height) == (220, 120)
+
+
+def test_each_source_is_shown_at_its_own_sync_point(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    project = pair(source_path, tall_source_path)
+    frame = preview(project, [source_clip, tall_source_clip], output_time=1.0)
+    assert file_time_shown(frame[:, :160]) == pytest.approx(2.0, abs=2 * FRAME)
+    assert file_time_shown(frame[:, 160:]) == pytest.approx(1.0, abs=2 * FRAME)
+
+
+def test_a_gap_blacks_out_one_panel_and_leaves_the_other_playing(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    # The tall Source is 2 s long with its Sync Point at 1 s: 1 s of footage each side.
+    project = pair(source_path, tall_source_path, lead_in=2.0, lead_out=2.0)
+    clips = [source_clip, tall_source_clip]
+    early = preview(project, clips, output_time=0.5)
+    late = preview(project, clips, output_time=3.5)
+    for frame, file_time in ((early, 0.5), (late, 3.5)):
+        assert is_black(frame[:, 160:])
+        assert file_time_shown(frame[:, :160]) == pytest.approx(file_time, abs=2 * FRAME)
+    assert build_output(project, clips).duration == pytest.approx(4.0)
+
+
+def test_only_the_first_source_can_be_resized(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    project = pair(
+        source_path,
+        tall_source_path,
+        first={"width": 80},
+        second={"width": 400, "crop": Crop(top=100)},
+    )
+    sizes = geometry(project, [source_clip, tall_source_clip])
+    assert sizes.resized == (80, 60)
+    assert sizes.cropped[1] == (100, 100)
+    assert sizes.layout.panel_widths == (80, 60)
+    assert tuple(build_output(project, [source_clip, tall_source_clip]).size) == (140, 60)
+
+
+def test_output_width_scales_every_panel(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    project = pair(source_path, tall_source_path, width=440)
+    frame = preview(project, [source_clip, tall_source_clip], output_time=1.0)
+    assert frame.shape[:2] == (240, 440)
+    assert frame[120, 380, 2] > 200
+
+
+def test_the_output_rate_defaults_to_the_highest_playback_rate(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    clips = [source_clip, tall_source_clip]
+    assert build_output(pair(source_path, tall_source_path), clips).fps == pytest.approx(20)
+    assert build_output(pair(source_path, tall_source_path, rate=12), clips).fps == 12
+
+
+def test_the_audio_source_alone_gives_the_output_its_sound(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    clips = [source_clip, tall_source_clip]
+    assert build_output(pair(source_path, tall_source_path, audio_source=0), clips).audio is not None
+    # The second Source has no sound, and "none" is allowed.
+    assert build_output(pair(source_path, tall_source_path, audio_source=1), clips).audio is None
+    assert build_output(pair(source_path, tall_source_path, audio_source=None), clips).audio is None
+    with pytest.raises(EditError, match="Audio Source"):
+        build_output(pair(source_path, tall_source_path, audio_source=2), clips)
+    assert build_output(project_for(Source(source_path)), [source_clip]).audio is not None
+    silent = Project((Source(source_path),), OutputSettings(1.0, 1.0), audio_source=None)
+    assert build_output(silent, [source_clip]).audio is None
+
+
+def test_a_problem_names_the_source_it_belongs_to(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    project = pair(source_path, tall_source_path, second={"crop": Crop(left=150)})
+    with pytest.raises(EditError, match="Source 2: The crop removes the whole picture"):
+        geometry(project, [source_clip, tall_source_clip])
+    with pytest.raises(EditError, match="Source 2: The crop removes the whole picture"):
+        build_output(project, [source_clip, tall_source_clip])
+
+
+def test_render_writes_a_row_with_overlays_and_the_audio_source_sound(
+    source_path, tall_source_path, source_clip, tall_source_clip, tmp_path
+):
+    project = pair(
+        source_path,
+        tall_source_path,
+        lead_in=2.0,
+        lead_out=2.0,
+        text_overlay=TextOverlay("Hi", size=20, corner=Corner.TOP_RIGHT),
+    )
+    written = render(project, [source_clip, tall_source_clip], tmp_path / "row.mp4")
+    with VideoFileClip(str(written)) as result:
+        assert result.size == [220, 120]
+        assert result.duration == pytest.approx(4.0, abs=0.15)
+        assert result.fps == pytest.approx(20)
+        assert result.audio is not None
+        gap = result.get_frame(0.5)
+        assert is_black(gap[40:, 170:])
+        assert gap[:30, -30:].min(axis=2).max() > 180, "the Overlay is missing over the Gap"
+        middle = result.get_frame(2.0)
+        assert middle[60, 190, 2] > 180
+        assert file_time_shown(middle[:, :160]) == pytest.approx(2.0, abs=3 * FRAME)
+
+    silent = render(
+        pair(source_path, tall_source_path, audio_source=None),
+        [source_clip, tall_source_clip],
+        tmp_path / "silent.mp4",
+    )
+    with VideoFileClip(str(silent)) as result:
+        assert result.audio is None

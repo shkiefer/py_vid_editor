@@ -5,7 +5,7 @@ This is the only module that talks to MoviePy.
 
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +14,7 @@ from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips,
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
+from vid_editor.layout import RowLayout, even, row_layout
 from vid_editor.model import Crop, EditError, Project, Quality, Source
 from vid_editor.overlays import overlay_patches, stamper
 from vid_editor.timing import SourceSpan, source_span
@@ -79,11 +80,6 @@ def source_info(clip: VideoFileClip) -> SourceInfo:
         playback_rate=float(clip.fps),
         has_sound=clip.audio is not None,
     )
-
-
-def even(value: float) -> int:
-    """Round down to an even number of pixels, as H.264 requires."""
-    return max(2, int(value) // 2 * 2)
 
 
 def _rotator(angle: float) -> Callable[[np.ndarray], np.ndarray]:
@@ -157,15 +153,15 @@ def span_of(clip: VideoFileClip, source: Source, project: Project) -> SourceSpan
     )
 
 
-def _panel(clip: VideoFileClip, source: Source, project: Project) -> VideoClip:
+def _panel(clip: VideoFileClip, source: Source, edited: VideoClip, project: Project) -> VideoClip:
     """One Source as it appears in the Output: footage with black Gaps.
 
-    Gaps are joined end to end with the footage rather than layered under it.
-    Layering costs about ten times more per frame.
+    `edited` is the Source's picture at the size of its Panel. Gaps are joined
+    end to end with the footage rather than layered under it. Layering costs
+    about ten times more per frame.
     """
     span = span_of(clip, source, project)
     running_time = project.output.running_time
-    edited = _edited(clip, source)
 
     def black(duration: float) -> VideoClip:
         return ColorClip(size=edited.size, color=(0, 0, 0), duration=duration)
@@ -187,21 +183,101 @@ def output_rate(project: Project, clips: Sequence[VideoFileClip]) -> float:
     return project.output.rate or max(float(clip.fps) for clip in clips)
 
 
+def _in_row(project: Project, clips: Sequence[VideoFileClip]) -> list[tuple[VideoFileClip, Source]]:
+    """Each opened Source with its settings as they count in the Row.
+
+    Only the first Source's resize counts. It sets the Row height, and every
+    other Source is scaled to that height whatever its own resize says.
+    """
+    if not project.sources:
+        raise EditError("The Output needs at least one Source")
+    if len(project.sources) != len(clips):
+        raise ValueError("Each Source needs its own opened file")
+    return [
+        (clip, source if position == 0 else replace(source, width=None))
+        for position, (clip, source) in enumerate(zip(clips, project.sources))
+    ]
+
+
+def _named(error: EditError, position: int, project: Project) -> EditError:
+    """Say which Source a problem belongs to, once there is more than one."""
+    if len(project.sources) == 1:
+        return error
+    return EditError(f"Source {position + 1}: {error}")
+
+
+def _row(sizes: Sequence[tuple[int, int]], project: Project) -> RowLayout:
+    try:
+        return row_layout(sizes, project.output.width)
+    except ValueError as error:
+        raise EditError(str(error)) from error
+
+
+@dataclass(frozen=True)
+class Geometry:
+    """The sizes that follow from the Sources' settings and the Output width."""
+
+    cropped: tuple[tuple[int, int], ...]
+    """Each Source after its rotation and crop, before any resize."""
+    resized: tuple[int, int]
+    """The first Source after its resize. Its height is the Row height."""
+    layout: RowLayout
+
+
+def geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
+    """Work out every Panel size without building the Output."""
+    cropped = []
+    for position, (clip, source) in enumerate(_in_row(project, clips)):
+        try:
+            cropped.append(edited_size(clip, replace(source, width=None)))
+        except EditError as error:
+            raise _named(error, position, project) from error
+    first = project.sources[0]
+    resized = cropped[0] if first.width is None else edited_size(clips[0], first)
+    return Geometry(tuple(cropped), resized, _row([resized, *cropped[1:]], project))
+
+
 def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
     """Compose the whole Output. `clips` are the opened Sources, in order."""
-    if len(project.sources) != 1 or len(clips) != 1:
-        raise NotImplementedError("Only one Source is supported so far")
-    output = _panel(clips[0], project.sources[0], project)
+    pictures = []
+    for position, (clip, source) in enumerate(_in_row(project, clips)):
+        try:
+            pictures.append(_edited(clip, source))
+        except EditError as error:
+            raise _named(error, position, project) from error
+    layout = _row([tuple(picture.size) for picture in pictures], project)
 
-    natural_width, natural_height = output.size
-    width = even(project.output.width or natural_width)
-    height = even(natural_height * width / natural_width)
-    if (width, height) != (natural_width, natural_height):
-        output = output.with_effects([vfx.Resize(new_size=(width, height))])
+    # Each Source is scaled once, straight to the size of its Panel.
+    panels = []
+    for clip, source, picture, panel_width in zip(
+        clips, project.sources, pictures, layout.panel_widths
+    ):
+        size = (panel_width, layout.height)
+        if tuple(picture.size) != size:
+            picture = picture.with_effects([vfx.Resize(new_size=size)])
+        panels.append(_panel(clip, source, picture, project))
 
-    patches = overlay_patches(project.output, width)
+    if len(panels) == 1:
+        output = panels[0]
+    else:
+        # Panels are joined side by side as plain arrays, for the same reason
+        # that Gaps are not layered.
+        output = VideoClip(
+            frame_function=lambda t: np.hstack([panel.get_frame(t) for panel in panels]).astype(
+                np.uint8, copy=False
+            ),
+            duration=project.output.running_time,
+        )
+
+    chosen = project.audio_source
+    if chosen is not None and not 0 <= chosen < len(panels):
+        raise EditError("The Audio Source is not one of the Sources")
+    sound = None if chosen is None else panels[chosen].audio
+    output = output.without_audio() if sound is None else output.with_audio(sound)
+
+    patches = overlay_patches(project.output, layout.width)
     if patches:
-        output = output.image_transform(stamper(patches, (width, height)))
+        output = output.image_transform(stamper(patches, (layout.width, layout.height)))
     return output.with_fps(output_rate(project, clips))
 
 

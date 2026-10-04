@@ -126,6 +126,7 @@ _Avoid_: Padding, filler, freeze
 - **Sources** placed top and bottom form a **Column** and are matched in width
 - In a grid, every **Row** is height matched and every **Column** is width matched
 - A **Source** is never distorted to fit its **Panel**; where it cannot match both its **Row** and its **Column**, it gets **Bars**
+- The first **Source** added sets the height of the first **Row**, and is the only **Source** whose resize counts; every other **Source** is scaled to fit
 - In the first **Row**, each **Source** sets the width of its **Column**
 - In any later **Row**, the first **Source** added sets the height of that **Row**
 - The order in which **Sources** are added therefore decides which ones set sizes and which ones get a **Crop Hint**
