@@ -79,6 +79,19 @@ def test_an_impossible_crop_is_reported_without_crashing(source_path):
     assert "removes the whole picture" in app.error[0].value
 
 
+def test_resizing_the_source_reports_both_sizes_and_sets_the_output_size(source_path):
+    app = open_app(source_path)
+    assert any("this Source is 160 by 120 pixels." in caption.value for caption in app.caption)
+    app.number_input(key="crop_left").set_value(80)
+    app.number_input(key="source_width").set_value(40).run()
+    assert not app.exception
+    assert any(
+        "this Source is 80 by 120 pixels, resized to 40 by 60 (50% of that size)." in caption.value
+        for caption in app.caption
+    )
+    assert any("Output is 40 by 60" in caption.value for caption in app.caption)
+
+
 def test_zero_running_time_is_reported(source_path):
     app = open_app(source_path)
     app.number_input(key="lead_out").set_value(0.0).run()

@@ -1,5 +1,6 @@
 """Video editor screen. Run with: uv run streamlit run streamlit_app.py"""
 
+from dataclasses import replace
 from pathlib import Path
 
 import streamlit as st
@@ -9,6 +10,8 @@ from vid_editor.model import Crop, OutputSettings, Project, Quality, Source
 from vid_editor.render import (
     EditError,
     build_output,
+    edited_size,
+    fit_within,
     open_source,
     preview,
     render,
@@ -17,6 +20,14 @@ from vid_editor.render import (
 )
 
 st.set_page_config(page_title="Video editor", page_icon=":material/movie_edit:", layout="wide")
+
+# The Preview is sent to the browser no larger than this many pixels, and shown
+# no taller than a share of the window, so a tall Source fits without scrolling.
+PREVIEW_BOX = (1280, 800)
+st.html(
+    "<style>.st-key-preview img "
+    "{max-height: 55vh; object-fit: contain; object-position: left top;}</style>"
+)
 
 
 @st.cache_resource(max_entries=4, on_release=lambda clip: clip.close(), show_spinner="Opening video")
@@ -79,6 +90,7 @@ if st.session_state.get("loaded_path") != path:
         crop_bottom=0,
         crop_left=0,
         crop_right=0,
+        source_width=None,
         aspect_on=False,
         aspect_width=info.width,
         aspect_height=info.height,
@@ -131,6 +143,17 @@ with settings:
         crop_columns = st.columns(4)
         for column, edge in zip(crop_columns, ("top", "bottom", "left", "right")):
             column.number_input(edge.capitalize(), key=f"crop_{edge}", min_value=0, step=10)
+
+        st.number_input(
+            "Resize to width (px)",
+            key="source_width",
+            min_value=2,
+            step=10,
+            placeholder="Cropped size",
+            help="Leave empty to keep the cropped size. Applied after the crop; "
+            "the height follows without distortion.",
+        )
+        size_hint = st.empty()
 
         with st.expander("Advanced"):
             st.toggle(
@@ -200,6 +223,7 @@ project = Project(
             rotation=state.rotation,
             crop=Crop(state.crop_top, state.crop_bottom, state.crop_left, state.crop_right),
             aspect_override=(state.aspect_width, state.aspect_height) if state.aspect_on else None,
+            width=state.source_width,
         ),
     ),
     output=OutputSettings(
@@ -210,6 +234,21 @@ project = Project(
         quality=state.quality or Quality.MEDIUM,
     ),
 )
+
+try:
+    source = project.sources[0]
+    cropped_width, cropped_height = edited_size(clip, replace(source, width=None))
+    source_width, source_height = edited_size(clip, source)
+except EditError:
+    pass  # reported beside the Preview
+else:
+    hint = f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels"
+    if (source_width, source_height) != (cropped_width, cropped_height):
+        hint += (
+            f", resized to {source_width} by {source_height} "
+            f"({source_width / cropped_width:.0%} of that size)"
+        )
+    size_hint.caption(hint + ".")
 
 # -------------------------------------------------------- Preview and render
 with result:
@@ -237,7 +276,8 @@ with result:
         st.error(str(error), icon=":material/error:")
         st.stop()
 
-    st.image(frame, width="stretch")
+    with st.container(key="preview"):
+        st.image(fit_within(frame, *PREVIEW_BOX), width="stretch")
     st.caption(
         f"Output is {width} by {height} pixels and runs for {project.output.running_time:.3f} s."
     )

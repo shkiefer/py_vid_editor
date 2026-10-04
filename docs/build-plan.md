@@ -25,7 +25,8 @@ Each slice ends with something runnable.
 - **Sync Point entry**: typed from an external viewer, then optionally refined with a frame stepper that overwrites the typed value. No in-app player.
 - **Preview time**: the Preview shows every Source at its Sync Point by default, with a control to move earlier or later.
 - **Timing feedback**: next to Lead-in and Lead-out, show each Source's start and end file times and its Gap lengths.
-- **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation).
+- **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation), then resize (a width in pixels; the height follows).
+- **Preview size**: the Preview is shrunk to fit 1280 by 800 pixels before it is sent to the browser, and shown no taller than 55% of the window height.
 - **Output Speed choices**: slowest Source (default), real time, or custom.
 - **Overlays**: text is white on a half-transparent black box with size and corner. Image is any file via Browse, plus a quick-pick list from `assets/logos/`, with corner, width as a percentage of the Output, and background opacity. Both default to off. Same-corner collision gives a warning.
 - **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
@@ -39,6 +40,16 @@ Each slice ends with something runnable.
 - **Rotation by an angle that is not a quarter turn is slow.** On a 1080p Source it costs roughly 110 ms per frame, against roughly 10 ms for a plain, cropped, or quarter-turned Source. The cost is in Pillow's image rotation. OpenCV would cut it to a few milliseconds but adds a dependency; not adopted yet.
 - **Scaling to an Output width costs roughly 40 ms per frame at 1080p**, also in Pillow.
 - **One Source keeps its own sound** until the Audio Source selector arrives in slice 5.
+
+- **A trim that starts partway through a file can show the Source frame one before the expected one.** Frame-exact Sync Points arrive with the frame stepper in slice 6.
+- **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
+
+## Open decisions
+
+- **Screen speed.** Each setting change takes 1 to 2 s on 1080p footage, because every change rebuilds the clip chain and MoviePy re-reads the first frame, which restarts ffmpeg. It will matter for the frame stepper in slice 6.
+- **OpenCV for rotation.** It would remove the rotation cost above but adds a dependency.
+- **HDR colour.** iPhone HDR footage is converted to standard colour without tone mapping. Accepted as it looks on the test recording.
+- **Unreadable file message.** It includes a few lines of ffmpeg output and could be shortened.
 
 ## Deferred
 

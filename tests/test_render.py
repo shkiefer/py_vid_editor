@@ -12,6 +12,7 @@ from vid_editor.render import (
     EditError,
     build_output,
     edited_size,
+    fit_within,
     open_source,
     preview,
     render,
@@ -140,6 +141,24 @@ def test_any_rotation_angle_grows_the_picture_to_fit(source_path, source_clip):
 def test_aspect_override_is_applied_before_rotation(source_path, source_clip):
     source = Source(source_path, aspect_override=(200, 100), rotation=90)
     assert edited_size(source_clip, source) == (100, 200)
+
+
+def test_source_width_resizes_after_the_crop_without_distortion(source_path, source_clip):
+    # Cropped to 80 by 120, then halved.
+    source = Source(source_path, crop=Crop(left=80), width=40)
+    assert edited_size(source_clip, source) == (40, 60)
+    frame = preview(project_for(source), [source_clip], output_time=1.0)
+    assert frame.shape[:2] == (60, 40)
+    assert edited_size(source_clip, Source(source_path, rotation=90, width=240)) == (240, 320)
+    with pytest.raises(EditError, match="at least 2"):
+        edited_size(source_clip, Source(source_path, width=1))
+
+
+def test_fit_within_shrinks_a_frame_to_a_box_and_never_enlarges(source_path, source_clip):
+    frame = preview(project_for(Source(source_path)), [source_clip], output_time=1.0)
+    assert fit_within(frame, 80, 80).shape[:2] == (60, 80)
+    assert fit_within(frame, 400, 30).shape[:2] == (30, 40)
+    assert fit_within(frame, 400, 400) is frame
 
 
 def test_output_width_scales_the_picture_to_even_dimensions(source_path, source_clip):

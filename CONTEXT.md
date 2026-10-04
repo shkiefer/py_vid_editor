@@ -117,8 +117,9 @@ _Avoid_: Padding, filler, freeze
 - A **Project** whose **Source** file has moved keeps that **Source**'s settings until the file is located again
 - An **Output** is built from one or more **Sources**; a single **Source** is not a separate mode
 - Each **Source** fills exactly one **Panel**
-- Each **Source** has exactly one **Sync Point**, and its own crop, rotation, and aspect ratio
+- Each **Source** has exactly one **Sync Point**, and its own crop, rotation, resize, and aspect ratio
 - A **Source** is rotated before it is cropped, so crop amounts and the **Crop Hint** are measured on the picture as it appears after rotation
+- A **Source** is resized after it is cropped, to a chosen width with the height following, so crop amounts never need retyping and the resize never distorts
 - A **Sync Point** is typed in by the user and can then be refined frame by frame; refining overwrites the typed value, and retyping discards the refinement
 - **Sources** are added one at a time, and the **Preview** is refreshed after each is added
 - **Sources** placed side by side form a **Row** and are matched in height

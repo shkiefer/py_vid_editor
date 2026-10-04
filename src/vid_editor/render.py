@@ -104,7 +104,7 @@ def _rotator(angle: float) -> Callable[[np.ndarray], np.ndarray]:
 
 
 def _edited(clip: VideoClip, source: Source) -> VideoClip:
-    """Apply a Source's own geometry: aspect override, then rotation, then crop."""
+    """Apply a Source's own geometry: aspect override, rotation, crop, then resize."""
     if source.aspect_override is not None:
         width, height = source.aspect_override
         if width < 2 or height < 2:
@@ -133,11 +133,19 @@ def _edited(clip: VideoClip, source: Source) -> VideoClip:
                 )
             ]
         )
+
+    if source.width is not None:
+        if source.width < 2:
+            raise EditError("The Source width must be at least 2 pixels")
+        width, height = clip.size
+        resized = (int(source.width), max(2, round(height * source.width / width)))
+        if resized != (width, height):
+            clip = clip.with_effects([vfx.Resize(new_size=resized)])
     return clip
 
 
 def edited_size(clip: VideoFileClip, source: Source) -> tuple[int, int]:
-    """Width and height of a Source after its own rotation and crop."""
+    """Width and height of a Source after its own rotation, crop and resize."""
     width, height = _edited(clip, source).size
     return int(width), int(height)
 
@@ -203,6 +211,17 @@ def preview(
     output = build_output(project, clips)
     last_frame_time = max(0.0, output.duration - 1 / output.fps)
     return output.get_frame(min(max(output_time, 0.0), last_frame_time))
+
+
+def fit_within(frame: np.ndarray, max_width: int, max_height: int) -> np.ndarray:
+    """Shrink a frame to fit a box without distortion. A frame that fits is left alone."""
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height)
+    if scale >= 1:
+        return frame
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    image = Image.fromarray(frame.astype(np.uint8))
+    return np.asarray(image.resize(size, Image.Resampling.BILINEAR))
 
 
 class _ProgressLogger(ProgressBarLogger):

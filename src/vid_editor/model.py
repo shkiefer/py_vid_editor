@@ -34,6 +34,9 @@ class Source:
     crop: Crop = field(default_factory=Crop)
     aspect_override: tuple[int, int] | None = None
     """Forced (width, height) in pixels, applied before rotation."""
+    width: int | None = None
+    """Width in pixels to resize to, applied after the crop. The height follows
+    without distortion. None keeps the cropped size."""
 
 
 @dataclass(frozen=True)
