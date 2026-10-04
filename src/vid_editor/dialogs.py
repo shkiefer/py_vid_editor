@@ -39,6 +39,19 @@ elif kind == "image":
         ],
         **options,
     )
+elif kind == "project":
+    chosen = filedialog.askopenfilename(
+        title="Open a Project",
+        filetypes=[("Project files", "*.json"), ("All files", "*.*")],
+        **options,
+    )
+elif kind == "save_project":
+    chosen = filedialog.asksaveasfilename(
+        title="Save the Project as",
+        defaultextension=".json",
+        filetypes=[("Project files", "*.json")],
+        **options,
+    )
 else:
     chosen = filedialog.askdirectory(title="Choose a folder", **options)
 root.destroy()
@@ -66,6 +79,16 @@ def pick_file(initial_dir: str = "") -> str | None:
 def pick_image(initial_dir: str = "") -> str | None:
     """Ask the user for an image file. Returns None if they cancel."""
     return _ask("image", initial_dir)
+
+
+def pick_project(initial_dir: str = "") -> str | None:
+    """Ask the user for a Project file to open. Returns None if they cancel."""
+    return _ask("project", initial_dir)
+
+
+def pick_project_to_save(initial_dir: str = "") -> str | None:
+    """Ask the user where to save a Project. Returns None if they cancel."""
+    return _ask("save_project", initial_dir)
 
 
 def pick_folder(initial_dir: str = "") -> str | None:

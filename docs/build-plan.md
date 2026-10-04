@@ -9,7 +9,7 @@ Each slice ends with something runnable.
 1. **Environment** (done) — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
 2. **One Source, end to end** (done) — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
 3. **Overlays** (done) — one text Overlay and one image Overlay.
-4. **Project file** — save, reopen, autosave.
+4. **Project file** (done) — save, reopen, autosave.
 5. **Several Sources in one Row** — height matching, Gaps, Audio Source.
 6. **Frame stepper** — refine each Sync Point frame by frame.
 7. **Speed** — Record Rate, Output Speed, Output Rate, Frame Hint.
@@ -34,7 +34,11 @@ Each slice ends with something runnable.
 - **Overlay settings outlive the Source**: choosing a new Source resets the Source and Output settings but leaves the Overlays as they are.
 - **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
 - **Output location**: written to a user-chosen folder, not offered as a browser download.
-- **Project file**: plain readable text, stored where the user chooses, holding Source paths and all settings.
+- **Project file**: plain readable text (JSON), stored where the user chooses, holding Source paths and all settings, including the Output folder and file name and the settings of an Overlay that is switched off.
+- **Saving**: a Project has no file until Save Project as gives it one. From then on every change is written to that file, including a setting the Preview rejects. The file is replaced in one step, so a failed save never leaves half a file.
+- **Opening**: a setting the file does not mention takes its usual starting value, so older files still open. A value that cannot be used stops the file from opening and names the value.
+- **Moved Source**: when an opened Project's Source file is not found, the settings wait and nothing is saved until the file is located; they are then applied to it and the new location is saved.
+- **Another Source**: while there is one Source per Project, choosing a different Source starts a new, unsaved Project and leaves the open Project file as it was. Slice 5 replaces this with adding Sources to the Project.
 - **Draft**: written to a temporary folder and replaced each time. Both Draft and full render show progress.
 - **Code shape**: timing and layout arithmetic are plain functions with automated tests, kept apart from the Streamlit screens.
 

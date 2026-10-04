@@ -13,7 +13,7 @@ uv sync
 uv run streamlit run streamlit_app.py
 ```
 
-The app only listens on this computer. It reads Source files by path and writes the Output to a folder you choose.
+The app only listens on this computer. It reads Source files by path and writes the Output to a folder you choose. Save Project as keeps every setting in a readable JSON file, which is then updated after every change.
 
 ## Test
 

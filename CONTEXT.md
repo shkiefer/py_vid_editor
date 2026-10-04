@@ -111,7 +111,7 @@ _Avoid_: Padding, filler, freeze
 ## Relationships
 
 - A **Project** produces exactly one **Output** and refers to its **Sources** by file location; it never contains video data
-- A **Project** is saved automatically after every change
+- A **Project** is saved automatically after every change, once the user has chosen where to keep it
 - A **Draft** covers the same running time as the **Output** and is thrown away; it is never the deliverable
 - The **Preview** checks one instant; the **Draft** checks motion, such as drift from a wrong **Record Rate**
 - A **Project** whose **Source** file has moved keeps that **Source**'s settings until the file is located again

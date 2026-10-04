@@ -1,11 +1,12 @@
 """Video editor screen. Run with: uv run streamlit run streamlit_app.py"""
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 
-from vid_editor.dialogs import pick_file, pick_folder, pick_image
+from vid_editor import dialogs, project_file
 from vid_editor.model import (
     Corner,
     Crop,
@@ -48,20 +49,20 @@ def cached_source(path: str, modified: float):
 
 def browse_source() -> None:
     current = st.session_state.get("source_path", "")
-    chosen = pick_file(str(Path(current).parent) if current else "")
+    chosen = dialogs.pick_file(str(Path(current).parent) if current else "")
     if chosen:
         st.session_state.source_path = chosen
 
 
 def browse_output_folder() -> None:
-    chosen = pick_folder(st.session_state.get("out_folder", ""))
+    chosen = dialogs.pick_folder(st.session_state.get("out_folder", ""))
     if chosen:
         st.session_state.out_folder = chosen
 
 
 def browse_image() -> None:
     current = st.session_state.get("image_path", "")
-    chosen = pick_image(str(Path(current).parent) if current else str(LOGO_FOLDER))
+    chosen = dialogs.pick_image(str(Path(current).parent) if current else str(LOGO_FOLDER))
     if chosen:
         st.session_state.image_path = chosen
 
@@ -75,7 +76,72 @@ def turn(degrees: float) -> None:
     st.session_state.rotation = (st.session_state.rotation + degrees) % 360
 
 
+def project_folder() -> str:
+    """Where a Project dialog starts: beside the Project file, or else the Source."""
+    current = st.session_state.get("project_path") or st.session_state.get("loaded_path")
+    return str(Path(current).parent) if current else ""
+
+
+def open_project() -> None:
+    chosen = dialogs.pick_project(project_folder())
+    if not chosen:
+        return
+    try:
+        settings = project_file.load(chosen)
+    except EditError as error:
+        st.session_state.project_error = str(error)
+        return
+    # The settings wait here until their Source file is opened, or located.
+    st.session_state.update(
+        project_path=chosen,
+        project_notice=None,
+        pending_settings=settings,
+        source_path=settings["source_path"],
+        saved_text=None,
+        saved_at=None,
+    )
+
+
+def save_project_as() -> None:
+    chosen = dialogs.pick_project_to_save(project_folder())
+    if chosen:
+        if Path(chosen).suffix.lower() != project_file.EXTENSION:
+            chosen += project_file.EXTENSION
+        st.session_state.update(
+            project_path=chosen, project_notice=None, saved_text=None, saved_at=None
+        )
+
+
+def show_project_status(slot) -> None:
+    state = st.session_state
+    if state.get("project_path"):
+        saved = f"; last saved at {state.saved_at}" if state.get("saved_at") else ""
+        slot.caption(f"Project file: {state.project_path}. Every change is saved automatically{saved}.")
+    else:
+        slot.caption(
+            state.get("project_notice")
+            or "This Project is not saved. Choose Save Project as to keep its settings in a file."
+        )
+
+
 st.title("Video editor")
+
+# -------------------------------------------------------------------- Project
+with st.container(horizontal=True, vertical_alignment="center"):
+    st.button(
+        "Open Project", icon=":material/file_open:", on_click=open_project, key="open_project"
+    )
+    st.button(
+        "Save Project as",
+        icon=":material/save_as:",
+        on_click=save_project_as,
+        key="save_project_as",
+        disabled=not st.session_state.get("source_path", "").strip(),
+    )
+    project_status = st.empty()
+show_project_status(project_status)
+if project_error := st.session_state.pop("project_error", None):
+    st.error(project_error, icon=":material/error:")
 
 # ---------------------------------------------------------------- Source file
 with st.container(horizontal=True, vertical_alignment="bottom"):
@@ -98,12 +164,26 @@ try:
     clip = cached_source(path, Path(path).stat().st_mtime)
 except EditError as error:
     st.error(str(error), icon=":material/error:")
+    if "pending_settings" in st.session_state:
+        st.info(
+            "The Project keeps this Source's settings. Choose where the file is now.",
+            icon=":material/search:",
+        )
     st.stop()
 
 info = source_info(clip)
 
-# A newly chosen Source resets every setting to match that file.
-if st.session_state.get("loaded_path") != path:
+# A newly chosen Source resets every setting to match that file. A Source that
+# an opened Project was waiting for then takes the Project's settings instead.
+pending = st.session_state.pop("pending_settings", None)
+if pending is not None or st.session_state.get("loaded_path") != path:
+    if pending is None and st.session_state.get("project_path"):
+        st.session_state.project_notice = (
+            "The Source changed, so this is a new Project and is not saved. "
+            f"{st.session_state.project_path} was left as it was."
+        )
+        st.session_state.project_path = None
+        show_project_status(project_status)
     st.session_state.update(
         loaded_path=path,
         sync_point=0.0,
@@ -126,6 +206,11 @@ if st.session_state.get("loaded_path") != path:
         preview_offset=0.0,
         last_render=None,
     )
+    if pending is not None:
+        pending = {key: value for key, value in pending.items() if key != "source_path"}
+        if "sync_point" in pending:
+            pending["sync_point"] = min(pending["sync_point"], info.duration)
+        st.session_state.update(pending)
 
 # Overlays belong to the Output, so a newly chosen Source leaves them alone.
 for key, value in {
@@ -172,8 +257,16 @@ with settings:
                 format="%.1f",
                 help="Any angle. Angles that are not quarter turns leave black corners to crop away.",
             )
-            st.button("Turn left", icon=":material/rotate_left:", on_click=turn, args=(90,))
-            st.button("Turn right", icon=":material/rotate_right:", on_click=turn, args=(-90,))
+            st.button(
+                "Turn left", icon=":material/rotate_left:", on_click=turn, args=(90,), key="turn_left"
+            )
+            st.button(
+                "Turn right",
+                icon=":material/rotate_right:",
+                on_click=turn,
+                args=(-90,),
+                key="turn_right",
+            )
 
         st.markdown("Crop (pixels, measured after rotation)")
         crop_columns = st.columns(4)
@@ -338,6 +431,27 @@ with settings:
         corner_warning = st.empty()
 
 state = st.session_state
+
+# Every change is saved to the Project file, once the Project has one.
+if state.get("project_path"):
+    saved_settings = {key: state[key] for key in project_file.KEYS} | {
+        "source_path": path,
+        "quality": state.quality or Quality.MEDIUM,
+    }
+    project_text = project_file.dumps(saved_settings)
+    if project_text != state.get("saved_text"):
+        try:
+            project_file.write(state.project_path, project_text)
+        except OSError as error:
+            project_status.error(
+                f"The Project could not be saved to {state.project_path}: {error}",
+                icon=":material/error:",
+            )
+        else:
+            state.saved_text = project_text
+            state.saved_at = datetime.now().strftime("%H:%M:%S")
+            show_project_status(project_status)
+
 text_overlay = None
 if state.text_on and state.text_value.strip():
     text_overlay = TextOverlay(text=state.text_value, size=state.text_size, corner=state.text_corner)
