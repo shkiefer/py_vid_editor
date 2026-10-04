@@ -27,6 +27,7 @@ from vid_editor.render import (
     open_source,
     preview,
     render,
+    source_frame,
     source_info,
 )
 
@@ -417,3 +418,42 @@ def test_render_writes_a_row_with_overlays_and_the_audio_source_sound(
     )
     with VideoFileClip(str(silent)) as result:
         assert result.audio is None
+
+
+# ------------------------------------------------------------- Frame stepping
+
+
+def test_source_info_counts_the_frames(source_clip):
+    assert source_info(source_clip).frame_count == pytest.approx(40, abs=1)
+
+
+def test_frames_can_be_stepped_through_in_either_direction(source_clip):
+    def shown(frame: int) -> float:
+        return file_time_shown(source_frame(source_clip, (frame + 0.5) / 10))
+
+    forward = [shown(frame) for frame in (20, 21, 22, 23)]
+    back = [shown(frame) for frame in (22, 21, 20, 10, 9, 8)]
+    assert forward == sorted(forward) and forward[-1] - forward[0] == pytest.approx(0.3, abs=0.06)
+    assert back == sorted(back, reverse=True)
+    assert back[:3] == forward[2::-1], "a frame read again is not the frame read before"
+    assert shown(9) == pytest.approx(0.9, abs=0.06)
+    # Past the end of the file the last frame is given, not an error.
+    assert file_time_shown(source_frame(source_clip, 99.0)) == pytest.approx(3.9, abs=0.06)
+
+
+def test_the_preview_shows_the_same_picture_as_the_rendered_output(
+    source_path, tall_source_path, source_clip, tall_source_clip, tmp_path
+):
+    project = pair(
+        source_path,
+        tall_source_path,
+        first={"sync_point": 2.0, "rotation": 90, "crop": Crop(top=10, left=20), "width": 80},
+        second={"sync_point": 1.0, "aspect_override": (120, 100), "rotation": 3},
+        width=300,
+        text_overlay=TextOverlay("Hi", size=14),
+    )
+    clips = [source_clip, tall_source_clip]
+    seen = preview(project, clips, output_time=1.0).astype(int)
+    built = build_output(project, clips).get_frame(1.0).astype(int)
+    assert seen.shape == built.shape
+    assert abs(seen - built).mean() < 3

@@ -18,6 +18,7 @@ from vid_editor.model import (
     TextOverlay,
 )
 from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patch
+from vid_editor.timing import frame_at, step_frames
 from vid_editor.render import (
     EditError,
     fit_within,
@@ -147,6 +148,14 @@ def use_logo() -> None:
 def turn(source_id: int, degrees: float) -> None:
     key = f"rotation_{source_id}"
     st.session_state[key] = (st.session_state[key] + degrees) % 360
+
+
+def step_sync_point(source_id: int, frames: int, rate: float, frame_count: int) -> None:
+    """Refine a Sync Point frame by frame. The refined time replaces the typed one."""
+    key = f"sync_point_{source_id}"
+    st.session_state[key] = step_frames(st.session_state[key], frames, rate, frame_count)
+    # The Preview moves to the Sync Event, where it shows the frame stepped to.
+    st.session_state.preview_offset = 0.0
 
 
 def audio_was_chosen() -> None:
@@ -371,7 +380,28 @@ with settings:
                     max_value=info.duration,
                     step=0.1,
                     format="%.3f",
-                    help="The time in this file at which the Sync Event is seen.",
+                    help="The time in this file at which the Sync Event is seen. Type it from "
+                    "a video player, then refine it with the frame buttons.",
+                )
+                with st.container(horizontal=True):
+                    for name, frames, label in (
+                        ("back_10", -10, "−10 frames"),
+                        ("back_1", -1, "−1 frame"),
+                        ("forward_1", 1, "+1 frame"),
+                        ("forward_10", 10, "+10 frames"),
+                    ):
+                        st.button(
+                            label,
+                            key=f"step_{name}_{source_id}",
+                            on_click=step_sync_point,
+                            args=(source_id, frames, info.playback_rate, info.frame_count),
+                        )
+                sync_frame = frame_at(state[f"sync_point_{source_id}"], info.playback_rate)
+                st.caption(
+                    f"The Sync Point is in frame {sync_frame + 1} of {info.frame_count}, which the "
+                    f"file shows from {sync_frame / info.playback_rate:.3f} to "
+                    f"{(sync_frame + 1) / info.playback_rate:.3f} s. "
+                    "Stepping moves the Preview to the Sync Event."
                 )
                 with st.container(horizontal=True, vertical_alignment="bottom"):
                     st.number_input(
@@ -746,8 +776,28 @@ with result:
                 f"{box_height / height:.0%} of its height."
             )
 
+    # One Source can be shown alone, at a larger size, to judge its Sync Point.
+    shown = frame
+    if len(source_ids) > 1:
+        show_options = ["all", *source_ids]
+        if state.get("preview_show") not in show_options:
+            state.preview_show = "all"
+        st.segmented_control(
+            "Show",
+            show_options,
+            key="preview_show",
+            format_func=lambda option: (
+                "Whole Output" if option == "all" else f"Source {numbers[option]}"
+            ),
+            required=True,
+        )
+        if state.preview_show in source_ids:
+            position = source_ids.index(state.preview_show)
+            left = sum(sizes.layout.panel_widths[:position])
+            shown = frame[:, left : left + sizes.layout.panel_widths[position]]
+
     with st.container(key="preview"):
-        st.image(fit_within(frame, *PREVIEW_BOX), width="stretch")
+        st.image(fit_within(shown, *PREVIEW_BOX), width="stretch")
     sound = "no sound" if audio_source is None else f"sound from Source {audio_source + 1}"
     st.caption(
         f"Output is {width} by {height} pixels and runs for {project.output.running_time:.3f} s "

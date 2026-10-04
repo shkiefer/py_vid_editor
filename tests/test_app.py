@@ -500,3 +500,59 @@ def test_a_file_that_is_not_a_project_is_reported_and_changes_nothing(source_pat
     assert "is not a Project file" in app.error[0].value
     assert app.number_input(key="sync_point_1").value == 1.5
     assert any("This Project is not saved" in caption.value for caption in app.caption)
+
+
+# ------------------------------------------------------------- Frame stepping
+
+
+def test_the_frame_buttons_refine_the_sync_point_by_whole_frames(source_path):
+    app = open_app(source_path)
+    app.number_input(key="sync_point_1").set_value(2.0).run()
+    assert "The Sync Point is in frame 21 of 40" in captions(app)
+
+    app.button(key="step_forward_1_1").click().run()
+    assert not app.exception
+    # Frame 22 of a 10 frames per second file begins at 2.1 s.
+    assert app.number_input(key="sync_point_1").value == 2.101
+    assert "The Sync Point is in frame 22 of 40, which the file shows from 2.100 to 2.200 s" in captions(app)
+
+    app.button(key="step_forward_10_1").click().run()
+    app.button(key="step_back_1_1").click().run()
+    assert app.number_input(key="sync_point_1").value == 3.001
+
+    # Retyping replaces the refined value.
+    app.number_input(key="sync_point_1").set_value(1.0).run()
+    assert "The Sync Point is in frame 11 of 40" in captions(app)
+
+
+def test_stepping_stops_at_the_ends_of_the_file(source_path):
+    app = open_app(source_path)
+    app.button(key="step_back_10_1").click().run()
+    assert "The Sync Point is in frame 1 of 40" in captions(app)
+    app.number_input(key="sync_point_1").set_value(3.95).run()
+    app.button(key="step_forward_10_1").click().run()
+    assert not app.exception
+    assert "The Sync Point is in frame 40 of 40" in captions(app)
+
+
+def test_stepping_moves_the_preview_to_the_sync_event(source_path):
+    app = open_app(source_path)
+    app.number_input(key="sync_point_1").set_value(2.0)
+    app.number_input(key="lead_in").set_value(1.0)
+    app.number_input(key="lead_out").set_value(1.0).run()
+    app.slider(key="preview_offset").set_value(0.5).run()
+    app.button(key="step_forward_1_1").click().run()
+    assert app.slider(key="preview_offset").value == 0
+
+
+def test_one_source_can_be_shown_alone_in_the_preview(source_path, tall_source_path):
+    alone = open_app(source_path)
+    assert not [control for control in alone.button_group if control.key == "preview_show"]
+
+    app = open_app(source_path, tall_source_path)
+    show = next(control for control in app.button_group if control.key == "preview_show")
+    assert show.value == "all"
+    show.set_value(app.session_state["source_ids"][1]).run()
+    assert not app.exception
+    # The Output itself is unchanged; only what the Preview shows of it.
+    assert "Output is 220 by 120 pixels" in captions(app)

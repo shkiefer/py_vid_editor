@@ -12,6 +12,7 @@ Three clocks appear here:
 """
 
 from dataclasses import dataclass
+from math import floor
 
 
 @dataclass(frozen=True)
@@ -94,3 +95,25 @@ def source_span(
         back_gap=(wanted_end - file_end) / rate,
         footage_time=footage_time,
     )
+
+
+def frame_at(file_time: float, playback_rate: float) -> int:
+    """Which frame of a Source file is on show at a file time, counted from 0."""
+    # The small allowance is the one MoviePy's reader uses, so both agree.
+    return max(0, int(file_time * playback_rate + 0.00001))
+
+
+def frame_time(frame: int, playback_rate: float) -> float:
+    """A file time that shows the given frame, in whole milliseconds.
+
+    The time is up to a millisecond after the frame begins, never on its
+    boundary, so rounding cannot tip it into the frame before. It reads the
+    same on screen and in the Project file as it is stored.
+    """
+    return (floor(frame * 1000 / playback_rate) + 1) / 1000
+
+
+def step_frames(file_time: float, frames: int, playback_rate: float, frame_count: int) -> float:
+    """The file time a given number of frames later (or earlier, if negative)."""
+    target = frame_at(file_time, playback_rate) + frames
+    return frame_time(min(max(target, 0), frame_count - 1), playback_rate)

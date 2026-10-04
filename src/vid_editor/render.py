@@ -1,23 +1,27 @@
 """Turns a Project into pictures: the Preview and the rendered Output.
 
-This is the only module that talks to MoviePy.
+This is the only module that talks to MoviePy. A Source's own geometry is
+applied one frame at a time by `edit_frame`, which the Preview and the
+rendered Output share. The Preview reads just the frames it shows, so the
+screen does not wait for MoviePy to rebuild a chain of clips on every change.
 """
 
 import tempfile
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips, vfx
+from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
 from vid_editor.layout import RowLayout, even, row_layout
 from vid_editor.model import Crop, EditError, Project, Quality, Source
 from vid_editor.overlays import overlay_patches, stamper
-from vid_editor.timing import SourceSpan, source_span
+from vid_editor.timing import SourceSpan, file_time_at, frame_at, source_span
 
 # H.264 constant rate factor per quality level. Lower is better and larger.
 _CRF = {Quality.HIGH: 18, Quality.MEDIUM: 23, Quality.SMALL: 28}
@@ -60,6 +64,7 @@ class SourceInfo:
     height: int
     playback_rate: float
     has_sound: bool
+    frame_count: int
 
 
 def open_source(path: str) -> VideoFileClip:
@@ -79,68 +84,127 @@ def source_info(clip: VideoFileClip) -> SourceInfo:
         height=int(clip.h),
         playback_rate=float(clip.fps),
         has_sound=clip.audio is not None,
+        frame_count=max(1, int(getattr(clip.reader, "n_frames", 0)) or round(clip.duration * clip.fps)),
     )
 
 
-def _rotator(angle: float) -> Callable[[np.ndarray], np.ndarray]:
-    """Rotate frames by any angle, growing the picture to fit, with black corners.
+# Frames lately read for the Preview, newest last, kept within a memory budget.
+_recent_frames: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
+_RECENT_FRAMES_BYTES = 200_000_000
+# Going back in a file means restarting ffmpeg. It is restarted this many
+# frames early, so that the next steps back are already in hand.
+_RUN_UP_FRAMES = 12
 
-    MoviePy's own Rotate turns every frame into floating point, which more
-    than doubles the cost of this step and of every step after it.
+
+def source_frame(clip: VideoFileClip, file_time: float) -> np.ndarray:
+    """The frame of a Source file on show at a file time, as the file has it.
+
+    Stepping forward reads one more frame. Stepping back is served from the
+    frames lately read where it can be.
     """
+    rate = float(clip.fps)
+    last_frame = max(1, int(getattr(clip.reader, "n_frames", 0)) or round(clip.duration * rate)) - 1
+    wanted = min(frame_at(file_time, rate), last_frame)
+    reader = id(clip.reader)
 
-    def rotate(frame: np.ndarray) -> np.ndarray:
-        image = Image.fromarray(frame)
-        return np.asarray(image.rotate(angle, expand=True, resample=Image.Resampling.BILINEAR))
+    def read(frame: int) -> np.ndarray:
+        picture = clip.get_frame((frame + 0.5) / rate)
+        _recent_frames[(reader, frame)] = picture
+        _recent_frames.move_to_end((reader, frame))
+        used = sum(kept.nbytes for kept in _recent_frames.values())
+        while used > _RECENT_FRAMES_BYTES and len(_recent_frames) > 1:
+            used -= _recent_frames.popitem(last=False)[1].nbytes
+        return picture
 
-    return rotate
+    if (reader, wanted) in _recent_frames:
+        _recent_frames.move_to_end((reader, wanted))
+        return _recent_frames[(reader, wanted)]
+    going_back = wanted < getattr(clip.reader, "pos", 0) - 1
+    if going_back:
+        for frame in range(max(0, wanted - _RUN_UP_FRAMES), wanted):
+            read(frame)
+    return read(wanted)
 
 
-def _edited(clip: VideoClip, source: Source) -> VideoClip:
-    """Apply a Source's own geometry: aspect override, rotation, crop, then resize."""
-    if source.aspect_override is not None:
-        width, height = source.aspect_override
-        if width < 2 or height < 2:
-            raise EditError("The aspect ratio override needs a width and height of at least 2")
-        clip = clip.with_effects([vfx.Resize(new_size=(width, height))])
-    angle = source.rotation % 360
+def _turned_size(size: tuple[int, int], angle: float) -> tuple[int, int]:
+    """The size of a picture after rotation, grown to fit."""
+    width, height = size
+    angle %= 360
+    if angle % 180 == 0:
+        return width, height
     if angle % 90 == 0:
-        if angle:
-            clip = clip.with_effects([vfx.Rotate(angle, expand=True)])
-    else:
-        clip = clip.image_transform(_rotator(angle))
+        return height, width
+    return Image.new("1", (width, height)).rotate(angle, expand=True).size
+
+
+def source_sizes(size: tuple[int, int], source: Source) -> tuple[tuple[int, int], tuple[int, int]]:
+    """The size of a Source after its rotation and crop, and then after its resize.
+
+    `size` is the (width, height) of the file's own picture. This is plain
+    arithmetic, and is where a Source's settings are checked.
+    """
+    if source.aspect_override is not None:
+        size = source.aspect_override
+        if min(size) < 2:
+            raise EditError("The aspect ratio override needs a width and height of at least 2")
+    width, height = _turned_size(size, source.rotation)
 
     crop = source.crop
-    width, height = clip.size
     if min(crop.top, crop.bottom, crop.left, crop.right) < 0:
         raise EditError("Crop amounts cannot be negative")
     if crop.left + crop.right > width - 2 or crop.top + crop.bottom > height - 2:
         raise EditError(
             f"The crop removes the whole picture. After rotation it is {width} by {height} pixels."
         )
-    if crop != Crop():
-        clip = clip.with_effects(
-            [
-                vfx.Crop(
-                    x1=crop.left, y1=crop.top, x2=width - crop.right, y2=height - crop.bottom
-                )
-            ]
-        )
+    cropped = (width - crop.left - crop.right, height - crop.top - crop.bottom)
 
-    if source.width is not None:
-        if source.width < 2:
-            raise EditError("The Source width must be at least 2 pixels")
-        width, height = clip.size
-        resized = (int(source.width), max(2, round(height * source.width / width)))
-        if resized != (width, height):
-            clip = clip.with_effects([vfx.Resize(new_size=resized)])
-    return clip
+    if source.width is None:
+        return cropped, cropped
+    if source.width < 2:
+        raise EditError("The Source width must be at least 2 pixels")
+    return cropped, (int(source.width), max(2, round(cropped[1] * source.width / cropped[0])))
+
+
+def _resized(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    image = Image.fromarray(np.ascontiguousarray(frame))
+    return np.asarray(image.resize(size, Image.Resampling.LANCZOS))
+
+
+def edit_frame(
+    frame: np.ndarray, source: Source, panel_size: tuple[int, int] | None = None
+) -> np.ndarray:
+    """Apply a Source's own geometry to one frame of its file.
+
+    The order is aspect override, rotation, crop, then one resize: to
+    `panel_size` when the frame is headed for a Panel, or else to the Source's
+    own resize. The settings must already have passed `source_sizes`.
+    """
+    if source.aspect_override is not None:
+        frame = _resized(frame, source.aspect_override)
+
+    angle = source.rotation % 360
+    if angle % 90 == 0:
+        frame = np.rot90(frame, k=int(angle // 90))  # anticlockwise
+    else:
+        # Any other angle grows the picture to fit and leaves black corners.
+        image = Image.fromarray(np.ascontiguousarray(frame))
+        frame = np.asarray(image.rotate(angle, expand=True, resample=Image.Resampling.BILINEAR))
+
+    crop = source.crop
+    height, width = frame.shape[:2]
+    frame = frame[crop.top : height - crop.bottom, crop.left : width - crop.right]
+
+    height, width = frame.shape[:2]
+    if panel_size is None:
+        panel_size = source_sizes((width, height), Source(source.path, width=source.width))[1]
+    if panel_size != (width, height):
+        frame = _resized(frame, panel_size)
+    return np.ascontiguousarray(frame)
 
 
 def edited_size(clip: VideoFileClip, source: Source) -> tuple[int, int]:
     """Width and height of a Source after its own rotation, crop and resize."""
-    width, height = _edited(clip, source).size
-    return int(width), int(height)
+    return source_sizes((int(clip.w), int(clip.h)), source)[1]
 
 
 def span_of(clip: VideoFileClip, source: Source, project: Project) -> SourceSpan:
@@ -225,36 +289,46 @@ class Geometry:
 
 
 def geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
-    """Work out every Panel size without building the Output."""
+    """Work out every Panel size. Plain arithmetic: no frame is read."""
     cropped = []
     for position, (clip, source) in enumerate(_in_row(project, clips)):
         try:
-            cropped.append(edited_size(clip, replace(source, width=None)))
+            sizes = source_sizes((int(clip.w), int(clip.h)), source)
         except EditError as error:
             raise _named(error, position, project) from error
-    first = project.sources[0]
-    resized = cropped[0] if first.width is None else edited_size(clips[0], first)
+        cropped.append(sizes[0])
+        if position == 0:
+            resized = sizes[1]
     return Geometry(tuple(cropped), resized, _row([resized, *cropped[1:]], project))
+
+
+def _panel_sizes(project: Project, clips: Sequence[VideoFileClip]) -> tuple[RowLayout, list[tuple[int, int]]]:
+    layout = geometry(project, clips).layout
+    return layout, [(panel_width, layout.height) for panel_width in layout.panel_widths]
+
+
+def _is_untouched(clip: VideoFileClip, source: Source, panel_size: tuple[int, int]) -> bool:
+    """Whether a Source goes into its Panel exactly as its file has it."""
+    return (
+        source.aspect_override is None
+        and source.rotation % 360 == 0
+        and source.crop == Crop()
+        and panel_size == (int(clip.w), int(clip.h))
+    )
 
 
 def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
     """Compose the whole Output. `clips` are the opened Sources, in order."""
-    pictures = []
-    for position, (clip, source) in enumerate(_in_row(project, clips)):
-        try:
-            pictures.append(_edited(clip, source))
-        except EditError as error:
-            raise _named(error, position, project) from error
-    layout = _row([tuple(picture.size) for picture in pictures], project)
+    layout, panel_sizes = _panel_sizes(project, clips)
 
     # Each Source is scaled once, straight to the size of its Panel.
     panels = []
-    for clip, source, picture, panel_width in zip(
-        clips, project.sources, pictures, layout.panel_widths
-    ):
-        size = (panel_width, layout.height)
-        if tuple(picture.size) != size:
-            picture = picture.with_effects([vfx.Resize(new_size=size)])
+    for clip, source, size in zip(clips, project.sources, panel_sizes):
+        picture = clip
+        if not _is_untouched(clip, source, size):
+            picture = clip.image_transform(
+                lambda frame, source=source, size=size: edit_frame(frame, source, size)
+            )
         panels.append(_panel(clip, source, picture, project))
 
     if len(panels) == 1:
@@ -284,10 +358,31 @@ def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
 def preview(
     project: Project, clips: Sequence[VideoFileClip], output_time: float
 ) -> np.ndarray:
-    """The Preview: one frame of the Output at a given running time."""
-    output = build_output(project, clips)
-    last_frame_time = max(0.0, output.duration - 1 / output.fps)
-    return output.get_frame(min(max(output_time, 0.0), last_frame_time))
+    """The Preview: one frame of the Output at a given running time.
+
+    Each Source's frame is read straight from its file and edited here, which
+    gives the same picture as `build_output` without building it.
+    """
+    layout, panel_sizes = _panel_sizes(project, clips)
+    last_frame_time = max(0.0, project.output.running_time - 1 / output_rate(project, clips))
+    output_time = min(max(output_time, 0.0), last_frame_time)
+
+    panels = []
+    for clip, source, size in zip(clips, project.sources, panel_sizes):
+        span = span_of(clip, source, project)
+        file_time = file_time_at(
+            output_time, sync_point=source.sync_point, lead_in=project.output.lead_in
+        )
+        if span.has_footage and span.file_start <= file_time < span.file_end:
+            panels.append(edit_frame(source_frame(clip, file_time), source, size))
+        else:
+            panels.append(np.zeros((size[1], size[0], 3), dtype=np.uint8))  # a Gap
+    frame = panels[0] if len(panels) == 1 else np.hstack(panels)
+
+    patches = overlay_patches(project.output, layout.width)
+    if patches:
+        frame = stamper(patches, (layout.width, layout.height))(frame)
+    return frame
 
 
 def fit_within(frame: np.ndarray, max_width: int, max_height: int) -> np.ndarray:

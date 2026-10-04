@@ -11,7 +11,7 @@ Each slice ends with something runnable.
 3. **Overlays** (done) — one text Overlay and one image Overlay.
 4. **Project file** (done) — save, reopen, autosave.
 5. **Several Sources in one Row** (done) — height matching, Gaps, Audio Source.
-6. **Frame stepper** — refine each Sync Point frame by frame.
+6. **Frame stepper** (done) — refine each Sync Point frame by frame.
 7. **Speed** — Record Rate, Output Speed, Output Rate, Frame Hint.
 8. **Draft render.**
 9. **Column, then grid** — width matching, Bars, Crop Hint.
@@ -23,6 +23,9 @@ Each slice ends with something runnable.
 - **Input**: local file paths with a native Browse dialog. No uploader. See `adr/0001`.
 - **Timing**: every Source is placed on Event Time. See `adr/0002`.
 - **Sync Point entry**: typed from an external viewer, then optionally refined with a frame stepper that overwrites the typed value. No in-app player.
+- **Frame stepper**: four buttons under each Sync Point move it by 1 or 10 frames of that Source's file and overwrite the typed value. A stepped Sync Point is stored in whole milliseconds, up to 1 ms after its frame begins and never on the boundary, so rounding cannot show the frame before. The screen reports which frame the Sync Point is in and the file times that frame covers. Stepping moves the Preview to the Sync Event, and with several Sources the Preview can show one Source alone.
+- **One frame at a time**: a Source's aspect override, rotation, crop and resize are applied by one function to one frame. The Preview reads only the frames it shows and edits them with that function; the rendered Output uses the same function, so the two cannot differ. Panel sizes are plain arithmetic and read no frame.
+- **Stepping back**: going back in a file restarts ffmpeg, so it is restarted 12 frames early and the frames lately read are kept (up to 200 MB) for the next steps back.
 - **Preview time**: the Preview shows every Source at its Sync Point by default, with a control to move earlier or later.
 - **Timing feedback**: next to Lead-in and Lead-out, show each Source's start and end file times and its Gap lengths.
 - **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation), then resize (a width in pixels; the height follows).
@@ -53,12 +56,12 @@ Each slice ends with something runnable.
 - **Scaling to an Output width costs roughly 40 ms per frame at 1080p**, also in Pillow.
 - **Each Source scaled to fit its Panel costs roughly 40 ms per frame at 1080p.** Two 1080p Sources in a 1280 wide Output took about 90 ms per frame, so a 7 s Output at 60 frames per second rendered in about 40 s.
 
-- **A trim that starts partway through a file can show the Source frame one before the expected one.** Frame-exact Sync Points arrive with the frame stepper in slice 6.
+- **The Preview at the Sync Event shows exactly the frame a stepped Sync Point names.** The rendered Output takes a frame every 1 / Output Rate seconds from its start, so it shows that same frame at the Sync Event only when the Lead-in is a whole number of Output frames.
+- **A screen update takes about 0.25 s with two 1080p Sources** (it was 1.7 s before slice 6). About one step back in thirteen takes 0.8 s while ffmpeg restarts.
 - **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
 
 ## Open decisions
 
-- **Screen speed.** Each setting change takes 1 to 2 s on 1080p footage, because every change rebuilds the clip chain and MoviePy re-reads the first frame, which restarts ffmpeg. It will matter for the frame stepper in slice 6.
 - **OpenCV for rotation.** It would remove the rotation cost above but adds a dependency.
 - **HDR colour.** iPhone HDR footage is converted to standard colour without tone mapping. Accepted as it looks on the test recording.
 - **Unreadable file message.** It includes a few lines of ffmpeg output and could be shortened.

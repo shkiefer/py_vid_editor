@@ -2,7 +2,7 @@
 
 import pytest
 
-from vid_editor.timing import file_time_at, source_span
+from vid_editor.timing import file_time_at, frame_at, frame_time, source_span, step_frames
 
 
 def test_source_with_enough_footage_has_no_gaps():
@@ -101,3 +101,36 @@ def test_source_entirely_outside_the_output_is_all_gap():
 def test_invalid_timing_is_rejected(kwargs):
     with pytest.raises(ValueError):
         source_span(**kwargs)
+
+
+# ------------------------------------------------------------- Frame stepping
+
+
+def test_a_file_time_falls_in_the_frame_on_show_at_that_time():
+    # At 29.97 frames per second, frame 99 (counted from 0) runs from 3.3033 to 3.3367 s.
+    assert frame_at(3.3, 29.97) == 98
+    assert frame_at(3.31, 29.97) == 99
+    assert frame_at(0.0, 29.97) == 0
+
+
+@pytest.mark.parametrize("rate", [10, 23.976, 25, 29.97, 30, 59.94, 60, 120, 240])
+def test_the_time_given_for_a_frame_is_inside_that_frame_and_in_whole_milliseconds(rate):
+    for frame in (0, 1, 2, 99, 100, 1234, 54321):
+        time = frame_time(frame, rate)
+        assert frame_at(time, rate) == frame
+        assert frame / rate < time < (frame + 1) / rate
+        assert time == round(time, 3)
+
+
+def test_stepping_moves_a_sync_point_by_whole_frames():
+    # A typed 3.3 s is in frame 98. One frame on is frame 99, which begins at 3.3033 s.
+    assert step_frames(3.3, 1, 29.97, 161) == 3.304
+    assert step_frames(3.304, -1, 29.97, 161) == 3.27
+    assert step_frames(3.3, 10, 29.97, 161) == pytest.approx(3.604)
+    there_and_back = step_frames(step_frames(3.304, 7, 29.97, 161), -7, 29.97, 161)
+    assert there_and_back == 3.304
+
+
+def test_stepping_stops_at_the_first_and_last_frames():
+    assert frame_at(step_frames(0.05, -10, 29.97, 161), 29.97) == 0
+    assert frame_at(step_frames(5.3, 10, 29.97, 161), 29.97) == 160
