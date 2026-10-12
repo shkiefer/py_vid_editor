@@ -12,7 +12,7 @@ Each slice ends with something runnable.
 4. **Project file** (done) — save, reopen, autosave.
 5. **Several Sources in one Row** (done) — height matching, Gaps, Audio Source.
 6. **Frame stepper** (done) — refine each Sync Point frame by frame.
-7. **Speed** (built, awaiting verification) — Record Rate, Output Speed, Output Rate, Frame Hint.
+7. **Speed** (done) — Record Rate, Output Speed, Output Rate, Frame Hint.
 8. **Draft render.**
 9. **Column, then grid** — width matching, Bars, Crop Hint.
 
