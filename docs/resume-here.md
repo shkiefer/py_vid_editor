@@ -5,7 +5,7 @@ Status on 2026-10-12. Delete this file once slice 10 is merged.
 ## Where things stand
 
 - Slices 1 to 9 are verified, committed and merged to `main` (last commit `e3c48af`).
-- Slice 10 (Layout of typed Panels) is built on branch `slice-10-layout` and is **not committed**: the changes are in the working tree. All 209 automated tests pass. It has not been checked by the user, and has not been clicked through in a browser.
+- Slice 10 (Layout of typed Panels) is built and committed on branch `slice-10-layout` (commit `f1c6059`), not merged to `main`. All 209 automated tests pass. It has not been checked by the user, and has not been clicked through in a browser.
 - Slices 11 (Sequences) and 12 (Transitions) are planned and not started. What was agreed for them is in `build-plan.md` under "Agreed for slices 11 and 12, not yet built", and the terms are in `../CONTEXT.md`.
 - `adr/0003-panels-have-typed-sizes.md` records why Panels have typed sizes.
 
@@ -41,7 +41,7 @@ What an automated comparison of the old and new layouts gave for the saved Proje
 ## After verification
 
 1. Fix what the check finds, on `slice-10-layout`.
-2. Mark slice 10 "(done)" in `build-plan.md`, delete this file, and commit. The commit must include the new files `src/vid_editor/layout.py`, `tests/test_layout.py` and `docs/adr/0003-panels-have-typed-sizes.md`, which are untracked.
+2. Mark slice 10 "(done)" in `build-plan.md`, delete this file, and commit.
 3. Merge to `main` (fast-forward), delete the branch, and start slice 11 on a new one.
 
 ## Things to know
