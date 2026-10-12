@@ -19,7 +19,7 @@ from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips,
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
-from vid_editor.layout import RowLayout, even, row_layout
+from vid_editor.layout import GridLayout, grid_layout
 from vid_editor.model import Crop, DraftSettings, EditError, Project, Quality, Source
 from vid_editor.overlays import overlay_patches, stamper
 from vid_editor.timing import (
@@ -353,10 +353,11 @@ def output_rate(project: Project, clips: Sequence[VideoFileClip]) -> float:
 
 
 def _in_row(project: Project, clips: Sequence[VideoFileClip]) -> list[tuple[VideoFileClip, Source]]:
-    """Each opened Source with its settings as they count in the Row.
+    """Each opened Source with its settings as they count in the layout.
 
-    Only the first Source's resize counts. It sets the Row height, and every
-    other Source is scaled to that height whatever its own resize says.
+    Only the first Source's resize counts. It sets the height of the first Row
+    and the width of the first Column, and every other Source is scaled to
+    fit whatever its own resize says.
     """
     if not project.sources:
         raise EditError("The Output needs at least one Source")
@@ -375,9 +376,11 @@ def _named(error: EditError, position: int, project: Project) -> EditError:
     return EditError(f"Source {position + 1}: {error}")
 
 
-def _row(sizes: Sequence[tuple[int, int]], project: Project) -> RowLayout:
+def _grid(sizes: Sequence[tuple[int, int]], project: Project) -> GridLayout:
     try:
-        return row_layout(sizes, project.output.width)
+        return grid_layout(
+            sizes, [source.row for source in project.sources], project.output.width
+        )
     except ValueError as error:
         raise EditError(str(error)) from error
 
@@ -389,8 +392,8 @@ class Geometry:
     cropped: tuple[tuple[int, int], ...]
     """Each Source after its rotation and crop, before any resize."""
     resized: tuple[int, int]
-    """The first Source after its resize. Its height is the Row height."""
-    layout: RowLayout
+    """The first Source after its resize. Its height is the height of the first Row."""
+    layout: GridLayout
 
 
 def geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
@@ -404,12 +407,31 @@ def geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
         cropped.append(sizes[0])
         if position == 0:
             resized = sizes[1]
-    return Geometry(tuple(cropped), resized, _row([resized, *cropped[1:]], project))
+    return Geometry(tuple(cropped), resized, _grid([resized, *cropped[1:]], project))
 
 
-def _panel_sizes(project: Project, clips: Sequence[VideoFileClip]) -> tuple[RowLayout, list[tuple[int, int]]]:
+def _picture_sizes(
+    project: Project, clips: Sequence[VideoFileClip]
+) -> tuple[GridLayout, list[tuple[int, int]]]:
+    """The layout, and the size each Source's picture is scaled to inside its Panel."""
     layout = geometry(project, clips).layout
-    return layout, [(panel_width, layout.height) for panel_width in layout.panel_widths]
+    return layout, [(panel.picture_width, panel.picture_height) for panel in layout.panels]
+
+
+def _composed(layout: GridLayout, pictures: Sequence[np.ndarray]) -> np.ndarray:
+    """One frame of the Output: each Source's picture in its Panel, on black.
+
+    The black shows as Bars beside a picture smaller than its Panel, and fills
+    any place in the grid that has no Source. Pictures are placed as plain
+    arrays rather than layered as MoviePy clips, which costs far more per frame.
+    """
+    frame = np.zeros((layout.height, layout.width, 3), dtype=np.uint8)
+    for panel, picture in zip(layout.panels, pictures):
+        frame[
+            panel.picture_top : panel.picture_top + panel.picture_height,
+            panel.picture_left : panel.picture_left + panel.picture_width,
+        ] = picture
+    return frame
 
 
 def _is_untouched(clip: VideoFileClip, source: Source, panel_size: tuple[int, int]) -> bool:
@@ -426,7 +448,7 @@ def build_output(
     project: Project, clips: Sequence[VideoFileClip], rough: bool = False
 ) -> VideoClip:
     """Compose the whole Output. `clips` are the opened Sources, in order."""
-    layout, panel_sizes = _panel_sizes(project, clips)
+    layout, panel_sizes = _picture_sizes(project, clips)
     output_speed = speeds(project, clips).output
 
     # Each Source is scaled once, straight to the size of its Panel.
@@ -442,12 +464,8 @@ def build_output(
     if len(panels) == 1:
         output = panels[0]
     else:
-        # Panels are joined side by side as plain arrays, for the same reason
-        # that Gaps are not layered.
         output = VideoClip(
-            frame_function=lambda t: np.hstack([panel.get_frame(t) for panel in panels]).astype(
-                np.uint8, copy=False
-            ),
+            frame_function=lambda t: _composed(layout, [panel.get_frame(t) for panel in panels]),
             duration=project.output.running_time,
         )
 
@@ -469,7 +487,7 @@ def preview(
     Each Source's frame is read straight from its file and edited here, which
     gives the same picture as `build_output` without building it.
     """
-    layout, panel_sizes = _panel_sizes(project, clips)
+    layout, panel_sizes = _picture_sizes(project, clips)
     last_frame_time = max(0.0, project.output.running_time - 1 / output_rate(project, clips))
     output_time = min(max(output_time, 0.0), last_frame_time)
     speed = speeds(project, clips)
@@ -488,7 +506,7 @@ def preview(
             panels.append(edit_frame(source_frame(clip, file_time), source, size))
         else:
             panels.append(np.zeros((size[1], size[0], 3), dtype=np.uint8))  # a Gap
-    frame = panels[0] if len(panels) == 1 else np.hstack(panels)
+    frame = panels[0] if len(panels) == 1 else _composed(layout, panels)
 
     patches = overlay_patches(project.output, layout.width)
     if patches:

@@ -14,7 +14,7 @@ Each slice ends with something runnable.
 6. **Frame stepper** (done) — refine each Sync Point frame by frame.
 7. **Speed** (done) — Record Rate, Output Speed, Output Rate, Frame Hint.
 8. **Draft render** (done) — a quick, small render around the Sync Event, written beside the Output.
-9. **Column, then grid** — width matching, Bars, Crop Hint.
+9. **Column, then grid** (done) — width matching, Bars, Crop Hint.
 
 ## Decisions
 
@@ -29,10 +29,13 @@ Each slice ends with something runnable.
 
 ### Sources
 
-- **Adding and removing Sources**: each Source added goes to the right-hand end of the Row, and any Source can be removed. Changing a Source's file path keeps its settings, which is how a moved file is located; a different video is added as a new Source.
+- **Adding and removing Sources**: each Source added goes to the right-hand end of Row 1, and any Source can be removed. Changing a Source's file path keeps its settings, which is how a moved file is located; a different video is added as a new Source.
 - **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation), then resize (a width in pixels; the height follows).
-- **Row height**: the first Source sets the Row height, after its own resize. Every other Source is scaled to that height, so its own resize is switched off. With no Output width the first Source is not scaled at all. Each Source is scaled once, straight to the size of its Panel, and Panel edges are rounded one by one so the widths add up to an even Output width.
-- **Joining Panels**: Panels are joined side by side as plain arrays rather than layered as MoviePy clips.
+- **Row height**: the first Source sets the height of Row 1, after its own resize. Every other Source in Row 1 is scaled to that height, so its own resize is switched off. With no Output width the first Source is not scaled at all. Each Source is scaled once, straight to the size of its Panel, and Panel edges are rounded one by one so the widths add up to an even Output width.
+- **Placing a Source**: each Source has a Row number, 1 at the top. Sources that share a Row run left to right in the order added, which also gives each its Column. Only the order of the Row numbers counts, so a Row left empty closes up. Source 1 is always first in Row 1, and when it is removed the next Source takes its place.
+- **Sizes in a grid**: Rows are settled top to bottom. The first Source of a later Row is matched to the width of Column 1. A Source that starts a new Column is matched to its Row height. Every other Source is scaled to fit its Panel and centred, with Bars either side.
+- **Crop Hint feedback**: beside each Source's crop the screen gives its place in the grid, its Panel size, the size it is scaled to, the size of its Bars, and how many pixels of width or height to crop to fill the Panel.
+- **Joining Panels**: each Source's picture is placed on a black frame as a plain array rather than layered as a MoviePy clip. The black is the Bars and any empty place in the grid.
 - **Moved Source**: when a Source file is not found, that Source's settings are kept until the file is located; they are then applied to it and the new location is saved. The other Sources stay usable, but there is no Preview until every Source is found.
 
 ### Sync and timing
@@ -78,7 +81,7 @@ Each slice ends with something runnable.
 - **Saving**: a Project has no file until Save Project as gives it one. From then on every change is written to that file, including a setting the Preview rejects and changes made while a Source file is missing. The file is replaced in one step, so a failed save never leaves half a file.
 - **Opening**: a setting the file does not mention takes its usual starting value, so older files still open. A value that cannot be used stops the file from opening and names the value.
 - **New Project** clears the screen and lets go of the Project file without changing it.
-- **Format 2** holds several Sources, the Audio Source, each Record Rate, the Output Speed and the Draft settings. Format 1 files, which held one Source, still open.
+- **Format 2** holds several Sources, the Audio Source, each Record Rate, the Output Speed, the Draft settings and each Source's Row. Format 1 files, which held one Source, still open.
 
 ## Known limits
 

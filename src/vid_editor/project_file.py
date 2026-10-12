@@ -58,6 +58,7 @@ _SOURCE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
     ("crop_right", "crop.right", _number(int, 0)),
     ("source_width", "width", _optional(_number(int, 2))),
     ("record_rate", "record_rate", _optional(_number(float, 0.001))),
+    ("row", "row", _number(int, 1)),
     ("aspect_on", "aspect_override.on", _switch),
     ("aspect_width", "aspect_override.width", _number(int, 2)),
     ("aspect_height", "aspect_override.height", _number(int, 2)),
@@ -101,7 +102,7 @@ class ProjectSettings:
     """What a Project file holds."""
 
     sources: list[dict[str, Any]]
-    """One dict per Source, left to right: its "path" and any of `SOURCE_KEYS`."""
+    """One dict per Source, in the order added: its "path" and any of `SOURCE_KEYS`."""
     shared: dict[str, Any] = field(default_factory=dict)
     """Any of `SHARED_KEYS`."""
     audio_source: int | None = 0

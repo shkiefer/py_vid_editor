@@ -655,3 +655,64 @@ def test_frames_kept_for_stepping_are_dropped_when_their_file_is_closed(source_p
     del clip
     gc.collect()
     assert not any(key[0] == reader for key in render_module._recent_frames)
+
+
+# ----------------------------------------------------------- Column and grid
+
+
+def test_sources_sit_top_and_bottom_matched_to_the_first_width(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    # The 100 by 200 Source is scaled to 160 wide, which makes it 320 high.
+    project = pair(source_path, tall_source_path, second={"sync_point": 1.0, "row": 2})
+    clips = [source_clip, tall_source_clip]
+    layout = geometry(project, clips).layout
+    assert (layout.width, layout.height) == (160, 440)
+    assert layout.row_heights == (120, 320)
+
+    frame = preview(project, clips, output_time=1.0)
+    assert frame.shape == (440, 160, 3)
+    assert file_time_shown(frame[:120]) == pytest.approx(2.0, abs=FRAME)
+    assert file_time_shown(frame[120:]) == pytest.approx(1.0, abs=FRAME)
+    assert frame[200:300, 40:120, 2].min() > 200  # the blue Source fills the width
+
+
+def test_a_source_that_cannot_match_its_row_and_column_gets_bars(
+    source_path, tall_source_path, source_clip, tall_source_clip, tmp_path
+):
+    # Row 1: wide, tall. Row 2: wide, wide. The last Panel is 60 by 120 and
+    # holds the wide Source at 60 by 45, with Bars above and below.
+    wide, tall = Source(source_path, sync_point=2.0), Source(tall_source_path, sync_point=1.0)
+    project = Project(
+        sources=(wide, tall, replace(wide, row=2), replace(wide, row=2)),
+        output=OutputSettings(lead_in=1.0, lead_out=1.0),
+    )
+    clips = [source_clip, tall_source_clip, source_clip, source_clip]
+    layout = geometry(project, clips).layout
+    assert (layout.width, layout.height) == (220, 240)
+    last = layout.panels[3]
+    assert (last.picture_width, last.picture_height) == (60, 45)
+    assert last.crop_hint.width == 100
+
+    frame = preview(project, clips, output_time=1.0)
+    assert is_black(frame[120 : last.picture_top - 1, 160:])  # the Bar above
+    assert is_black(frame[last.picture_top + 46 :, 160:])  # the Bar below
+    picture = frame[last.picture_top + 2 : last.picture_top + 43, 162:218]
+    assert file_time_shown(picture) == pytest.approx(2.0, abs=FRAME)
+
+    written = render(project, clips, tmp_path / "grid.mp4")
+    with VideoFileClip(str(written)) as result:
+        assert result.size == [220, 240]
+        rendered = result.get_frame(1.0)
+        assert is_black(rendered[124 : last.picture_top - 4, 164:216])
+        assert file_time_shown(rendered[last.picture_top + 4 : last.picture_top + 41, 164:216]) == (
+            pytest.approx(2.0, abs=3 * FRAME)
+        )
+
+
+def test_the_first_source_must_be_in_the_first_row(
+    source_path, tall_source_path, source_clip, tall_source_clip
+):
+    project = pair(source_path, tall_source_path, first={"row": 2}, second={"row": 1})
+    with pytest.raises(EditError, match="first Row"):
+        geometry(project, [source_clip, tall_source_clip])

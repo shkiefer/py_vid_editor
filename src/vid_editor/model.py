@@ -91,6 +91,9 @@ class Source:
     record_rate: float | None = None
     """Record Rate in frames per second. None means the file's Playback Rate,
     which makes the Source real time."""
+    row: int = 1
+    """The Row the Source sits in, counted from 1 at the top. Only the order
+    of the numbers counts, so Rows 1 and 3 with no Row 2 are two Rows."""
 
 
 @dataclass(frozen=True)
@@ -136,7 +139,8 @@ class Project:
     """The Sources and settings that produce one Output."""
 
     sources: tuple[Source, ...]
-    """Left to right in the Row. The first sets the Row height."""
+    """In the order added, which is left to right within each Row. The first
+    sets the height of the first Row and the width of the first Column."""
     output: OutputSettings
     audio_source: int | None = 0
     """Position in `sources` of the Audio Source. None gives an Output with no sound."""

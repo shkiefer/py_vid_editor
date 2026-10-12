@@ -262,7 +262,8 @@ with st.container(horizontal=True, vertical_alignment="bottom"):
         key="add_path",
         placeholder=r"C:\videos\camera_a.mp4",
         help="Type or paste the path of a video file on this computer and press Enter, "
-        "or use Browse. Each Source added goes to the right of the ones before it.",
+        "or use Browse. Each Source added goes to the right-hand end of Row 1. "
+        "Its Row can then be changed in its tab.",
     )
     st.button("Browse", icon=":material/folder_open:", on_click=browse_to_add, key="browse_source")
 if add_error := state.pop("add_error", None):
@@ -296,6 +297,7 @@ for source_id in source_ids:
         "crop_right": 0,
         "source_width": None,
         "record_rate": None,
+        "row": 1,
         "aspect_on": False,
         "aspect_width": info.width,
         "aspect_height": info.height,
@@ -308,6 +310,9 @@ for source_id in source_ids:
 
 # The first Source sets the Output up. Overlays start switched off.
 first_id = source_ids[0]
+if first_id in clips:
+    # It also sets the size of the layout, from the first place in Row 1.
+    state[f"row_{first_id}"] = 1
 first_path = Path(paths[first_id])
 for key, value in {
     "lead_in": 0.0,
@@ -481,16 +486,28 @@ with settings:
 
                 sets_row_height = source_id == first_id
                 st.number_input(
+                    "Row",
+                    key=f"row_{source_id}",
+                    min_value=1,
+                    max_value=max(1, len(source_ids)),
+                    step=1,
+                    disabled=sets_row_height,
+                    help="Row 1 is the top of the Output. Sources that share a Row sit side by "
+                    "side, in the order they were added, and are matched in height. A Source in "
+                    "a Row of its own sits under Row 1 and is matched in width. Source 1 is "
+                    "always first in Row 1.",
+                )
+                st.number_input(
                     "Resize to width (px)",
                     key=f"source_width_{source_id}",
                     value=None,
                     min_value=2,
                     step=10,
-                    placeholder="Cropped size" if sets_row_height else "Matched to the Row height",
+                    placeholder="Cropped size" if sets_row_height else "Scaled to fit its Panel",
                     disabled=not sets_row_height,
-                    help="Only for Source 1, which sets the Row height. Leave empty to keep the "
-                    "cropped size. Applied after the crop; the height follows without distortion. "
-                    "Every other Source is scaled to the Row height.",
+                    help="Only for Source 1, which sets the height of Row 1 and the width of "
+                    "Column 1. Leave empty to keep the cropped size. Applied after the crop; the "
+                    "height follows without distortion. Every other Source is scaled to fit.",
                 )
                 size_hints[source_id] = st.empty()
 
@@ -761,6 +778,7 @@ with result:
                 ),
                 width=values["source_width"],
                 record_rate=values["record_rate"],
+                row=values["row"],
             )
             for source_id, values in kept.items()
         ),
@@ -828,10 +846,13 @@ with result:
             icon=":material/volume_off:",
         )
 
-    # Each Source's size, and what the Row does to it, shown beside its settings.
+    # Each Source's size, and what the layout does to it, shown beside its settings.
+    one_row = len(sizes.layout.row_heights) == 1
     for position, source_id in enumerate(source_ids):
         cropped_width, cropped_height = sizes.cropped[position]
-        panel_width = sizes.layout.panel_widths[position]
+        panel = sizes.layout.panels[position]
+        place = f"Row {panel.row + 1}, Column {panel.column + 1}"
+        box = f"{panel.width} by {panel.height} pixels"
         hint = f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels"
         if position == 0:
             resized_width, resized_height = sizes.resized
@@ -841,13 +862,43 @@ with result:
                     f"({resized_width / cropped_width:.0%} of that size)"
                 )
             hint += "."
-            if len(source_ids) > 1:
-                hint += f" It sets the Row height. Its Panel is {panel_width} by {height} pixels."
-        else:
+            if len(source_ids) > 1 and one_row:
+                hint += f" It sets the Row height. Its Panel is {box}."
+            elif len(source_ids) > 1:
+                hint += f" It sets the height of Row 1 and the width of Column 1. Its Panel is {box}."
+        elif panel.sets_column:
             hint += (
-                f". Scaled to the Row height, its Panel is {panel_width} by {height} pixels "
-                f"({height / cropped_height:.0%} of that size)."
+                f". Scaled to the Row height, its Panel is {box} "
+                f"({panel.height / cropped_height:.0%} of that size)."
             )
+            if not one_row:
+                hint += f" It is in {place}, and sets the width of Column {panel.column + 1}."
+        elif panel.sets_row:
+            hint += (
+                f". Scaled to the width of Column 1, its Panel is {box} "
+                f"({panel.width / cropped_width:.0%} of that size). It is in {place}, and sets "
+                f"the height of Row {panel.row + 1}."
+            )
+        else:
+            scale = panel.picture_width / cropped_width
+            hint += f". Its Panel, in {place}, is already {box}. "
+            if panel.crop_hint is None:
+                hint += f"Scaled to fit ({scale:.0%} of that size), it fills the Panel with no Bars."
+            else:
+                bars_wide, bars_high = panel.bars
+                if panel.crop_hint.width:
+                    bars = f"{bars_high / 2:g} pixels above and below"
+                    lose = panel.crop_hint.width
+                    remedy = f"crop {lose} pixels of width, to {cropped_width - lose} wide"
+                else:
+                    bars = f"{bars_wide / 2:g} pixels left and right"
+                    lose = panel.crop_hint.height
+                    remedy = f"crop {lose} pixels of height, to {cropped_height - lose} high"
+                hint += (
+                    f"Scaled to fit, it is {panel.picture_width} by {panel.picture_height} pixels "
+                    f"({scale:.0%} of that size), with Bars of {bars}. Crop Hint: {remedy}, and "
+                    "it fills the Panel."
+                )
         size_hints[source_id].caption(hint)
 
     # Each Overlay's size against the Output, shown beside its settings.
@@ -888,15 +939,23 @@ with result:
             required=True,
         )
         if state.preview_show in source_ids:
-            position = source_ids.index(state.preview_show)
-            left = sum(sizes.layout.panel_widths[:position])
-            shown = frame[:, left : left + sizes.layout.panel_widths[position]]
+            panel = sizes.layout.panels[source_ids.index(state.preview_show)]
+            shown = frame[
+                panel.top : panel.top + panel.height, panel.left : panel.left + panel.width
+            ]
 
     with st.container(key="preview"):
         st.image(fit_within(shown, *PREVIEW_BOX), width="stretch")
     sound = "no sound" if silent_because else f"sound from Source {audio_source + 1}"
+    grid_shape = ""
+    if not one_row:
+        column_count = len(sizes.layout.column_widths)
+        grid_shape = (
+            f", in {len(sizes.layout.row_heights)} Rows and {column_count} "
+            f"Column{'s' if column_count > 1 else ''}"
+        )
     st.caption(
-        f"Output is {width} by {height} pixels and runs for {running_time:.3f} s "
+        f"Output is {width} by {height} pixels{grid_shape} and runs for {running_time:.3f} s "
         f"at {rate:g} frames per second, with {sound}. Output Speed {speed.output:.3g}."
     )
     st.table(

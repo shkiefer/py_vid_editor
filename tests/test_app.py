@@ -255,6 +255,7 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
         "crop": None,
         "width": None,
         "record_rate": None,
+        "row": 1,
         "aspect_override": None,
     }
     assert any(f"Project file: {project}" in caption.value for caption in app.caption)
@@ -749,3 +750,71 @@ def test_a_setting_that_can_be_left_empty_can_be_emptied_again(source_path):
     app.number_input(key="record_rate_1").set_value(None).run()
     assert not app.exception
     assert "Source Speed 1: this file shows the real event in real time." in captions(app)
+
+
+def test_a_source_in_a_row_of_its_own_sits_under_row_1_matched_in_width(
+    source_path, tall_source_path, tmp_path
+):
+    app = open_app(source_path, tall_source_path)
+    assert app.number_input(key="row_1").disabled
+    app.number_input(key="row_2").set_value(2).run()
+
+    assert not app.exception
+    text = captions(app)
+    assert "It sets the height of Row 1 and the width of Column 1. Its Panel is 160 by 120 pixels." in text
+    assert (
+        "Scaled to the width of Column 1, its Panel is 160 by 320 pixels (160% of that size). "
+        "It is in Row 2, Column 1, and sets the height of Row 2." in text
+    )
+    assert "Output is 160 by 440 pixels, in 2 Rows and 1 Column and runs" in text
+
+    app.text_input(key="out_folder").set_value(str(tmp_path))
+    app.text_input(key="out_name").set_value("column.mp4").run()
+    app.button(key="render").click().run()
+    assert not app.exception
+    with VideoFileClip(str(tmp_path / "column.mp4")) as output:
+        assert output.size == [160, 440]
+
+
+def test_a_source_with_bars_gets_a_crop_hint_that_removes_them(source_path, tall_source_path):
+    app = open_app(source_path, tall_source_path, source_path, source_path)
+    app.number_input(key="row_3").set_value(2)
+    app.number_input(key="row_4").set_value(2).run()
+
+    assert not app.exception
+    text = captions(app)
+    assert "It is in Row 1, Column 2, and sets the width of Column 2." in text
+    assert (
+        "Its Panel, in Row 2, Column 2, is already 60 by 120 pixels. Scaled to fit, it is "
+        "60 by 45 pixels (38% of that size), with Bars of 37.5 pixels above and below. "
+        "Crop Hint: crop 100 pixels of width, to 60 wide, and it fills the Panel." in text
+    )
+    assert "Output is 220 by 240 pixels, in 2 Rows and 2 Columns" in text
+
+    app.number_input(key="crop_left_4").set_value(50)
+    app.number_input(key="crop_right_4").set_value(50).run()
+    assert "Scaled to fit (100% of that size), it fills the Panel with no Bars." in captions(app)
+
+
+def test_rows_are_saved_and_reopened(source_path, tall_source_path, tmp_path, monkeypatch):
+    project = tmp_path / "grid.json"
+    app = open_app(source_path, tall_source_path)
+    save_project_as(app, project, monkeypatch)
+    app.number_input(key="row_2").set_value(2).run()
+    assert [source["row"] for source in saved(project)["sources"]] == [1, 2]
+
+    again = AppTest.from_file(APP, default_timeout=60)
+    again.run()
+    open_project(again, project, monkeypatch)
+    assert not again.exception
+    assert again.number_input(key="row_2").value == 2
+    assert "Output is 160 by 440 pixels" in captions(again)
+
+
+def test_removing_the_first_source_puts_the_next_one_first_in_row_1(source_path, tall_source_path):
+    app = open_app(source_path, tall_source_path)
+    app.number_input(key="row_2").set_value(2).run()
+    app.button(key="remove_1").click().run()
+    assert not app.exception
+    assert app.number_input(key="row_2").value == 1
+    assert "Output is 100 by 200 pixels and runs" in captions(app)

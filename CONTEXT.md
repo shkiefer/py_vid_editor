@@ -130,7 +130,11 @@ _Avoid_: Padding, filler, freeze
 - A **Source** is never distorted to fit its **Panel**; where it cannot match both its **Row** and its **Column**, it gets **Bars**
 - The first **Source** added sets the height of the first **Row**, and is the only **Source** whose resize counts; every other **Source** is scaled to fit
 - In the first **Row**, each **Source** sets the width of its **Column**
-- In any later **Row**, the first **Source** added sets the height of that **Row**
+- In any later **Row**, the first **Source** added is matched to the width of the first **Column** and so sets the height of that **Row**
+- A later **Row** may be longer than the first; a **Source** that starts a new **Column** is matched to the height of its **Row** and sets the width of that **Column**
+- A place in the grid with no **Source** is black
+- **Bars** are split evenly either side of the **Source**
+- The **Crop Hint** is measured in the same pixels as the crop, on the picture after rotation and crop, and names either width or height, never both
 - The order in which **Sources** are added therefore decides which ones set sizes and which ones get a **Crop Hint**
 - Changing the crop of a size-setting **Source** recalculates every dependent **Panel** and **Crop Hint**
 - Every other **Source** has a **Panel** of already fixed size and gets a **Crop Hint** for width (after matching the **Row** height) and for height (after matching the **Column** width)

@@ -18,6 +18,7 @@ SOURCE = {
     "crop_right": 0,
     "source_width": None,
     "record_rate": 240.0,
+    "row": 2,
     "aspect_on": False,
     "aspect_width": 1920,
     "aspect_height": 1080,
