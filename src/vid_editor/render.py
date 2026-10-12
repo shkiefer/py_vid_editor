@@ -7,6 +7,7 @@ screen does not wait for MoviePy to rebuild a chain of clips on every change.
 """
 
 import tempfile
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -19,7 +20,7 @@ from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
 from vid_editor.layout import RowLayout, even, row_layout
-from vid_editor.model import Crop, EditError, Project, Quality, Source
+from vid_editor.model import Crop, DraftSettings, EditError, Project, Quality, Source
 from vid_editor.overlays import overlay_patches, stamper
 from vid_editor.timing import (
     FrameHint,
@@ -34,6 +35,9 @@ from vid_editor.timing import (
 
 # H.264 constant rate factor per quality level. Lower is better and larger.
 _CRF = {Quality.HIGH: 18, Quality.MEDIUM: 23, Quality.SMALL: 28}
+
+# A Draft is encoded fast and coarsely.
+_DRAFT_CRF = 30
 
 # Gaps shorter than this many seconds are rounding noise, not real Gaps.
 _NEGLIGIBLE = 1e-6
@@ -103,6 +107,13 @@ _RECENT_FRAMES_BYTES = 200_000_000
 # Going back in a file means restarting ffmpeg. It is restarted this many
 # frames early, so that the next steps back are already in hand.
 _RUN_UP_FRAMES = 12
+_known_readers: set[int] = set()
+
+
+def _forget_reader(reader: int) -> None:
+    _known_readers.discard(reader)
+    for key in [key for key in _recent_frames if key[0] == reader]:
+        del _recent_frames[key]
 
 
 def source_frame(clip: VideoFileClip, file_time: float) -> np.ndarray:
@@ -115,6 +126,11 @@ def source_frame(clip: VideoFileClip, file_time: float) -> np.ndarray:
     last_frame = max(1, int(getattr(clip.reader, "n_frames", 0)) or round(clip.duration * rate)) - 1
     wanted = min(frame_at(file_time, rate), last_frame)
     reader = id(clip.reader)
+    if reader not in _known_readers:
+        # A later file can be given the same id once this one is gone, so its
+        # frames are dropped with it.
+        _known_readers.add(reader)
+        weakref.finalize(clip.reader, _forget_reader, reader)
 
     def read(frame: int) -> np.ndarray:
         picture = clip.get_frame((frame + 0.5) / rate)
@@ -174,22 +190,29 @@ def source_sizes(size: tuple[int, int], source: Source) -> tuple[tuple[int, int]
     return cropped, (int(source.width), max(2, round(cropped[1] * source.width / cropped[0])))
 
 
-def _resized(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+def _resized(frame: np.ndarray, size: tuple[int, int], rough: bool = False) -> np.ndarray:
     image = Image.fromarray(np.ascontiguousarray(frame))
+    if rough:
+        # About half the cost of the careful resize, and good enough for a Draft.
+        return np.asarray(image.resize(size, Image.Resampling.BILINEAR, reducing_gap=1.0))
     return np.asarray(image.resize(size, Image.Resampling.LANCZOS))
 
 
 def edit_frame(
-    frame: np.ndarray, source: Source, panel_size: tuple[int, int] | None = None
+    frame: np.ndarray,
+    source: Source,
+    panel_size: tuple[int, int] | None = None,
+    rough: bool = False,
 ) -> np.ndarray:
     """Apply a Source's own geometry to one frame of its file.
 
     The order is aspect override, rotation, crop, then one resize: to
     `panel_size` when the frame is headed for a Panel, or else to the Source's
-    own resize. The settings must already have passed `source_sizes`.
+    own resize. The settings must already have passed `source_sizes`. `rough`
+    trades the quality of the resize for speed, which is what a Draft wants.
     """
     if source.aspect_override is not None:
-        frame = _resized(frame, source.aspect_override)
+        frame = _resized(frame, source.aspect_override, rough)
 
     angle = source.rotation % 360
     if angle % 90 == 0:
@@ -207,7 +230,7 @@ def edit_frame(
     if panel_size is None:
         panel_size = source_sizes((width, height), Source(source.path, width=source.width))[1]
     if panel_size != (width, height):
-        frame = _resized(frame, panel_size)
+        frame = _resized(frame, panel_size, rough)
     return np.ascontiguousarray(frame)
 
 
@@ -399,7 +422,9 @@ def _is_untouched(clip: VideoFileClip, source: Source, panel_size: tuple[int, in
     )
 
 
-def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
+def build_output(
+    project: Project, clips: Sequence[VideoFileClip], rough: bool = False
+) -> VideoClip:
     """Compose the whole Output. `clips` are the opened Sources, in order."""
     layout, panel_sizes = _panel_sizes(project, clips)
     output_speed = speeds(project, clips).output
@@ -410,7 +435,7 @@ def build_output(project: Project, clips: Sequence[VideoFileClip]) -> VideoClip:
         picture = clip
         if not _is_untouched(clip, source, size):
             picture = clip.image_transform(
-                lambda frame, source=source, size=size: edit_frame(frame, source, size)
+                lambda frame, source=source, size=size: edit_frame(frame, source, size, rough)
             )
         panels.append(_panel(clip, source, picture, project, output_speed))
 
@@ -494,6 +519,28 @@ class _ProgressLogger(ProgressBarLogger):
             self._on_progress(stage, min(value / total, 1.0))
 
 
+def _write(
+    output: VideoClip,
+    destination: Path,
+    preset: str,
+    crf: int,
+    on_progress: ProgressCallback | None,
+) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output.write_videofile(
+        str(destination),
+        fps=output.fps,
+        codec="libx264",
+        audio_codec="aac",
+        preset=preset,
+        ffmpeg_params=["-crf", str(crf)],
+        pixel_format="yuv420p",
+        temp_audiofile_path=tempfile.gettempdir(),
+        logger=_ProgressLogger(on_progress) if on_progress else None,
+    )
+    return destination
+
+
 def render(
     project: Project,
     clips: Sequence[VideoFileClip],
@@ -504,18 +551,46 @@ def render(
     destination = Path(destination)
     if destination.suffix.lower() != ".mp4":
         raise EditError("The Output file name must end in .mp4")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    output = build_output(project, clips)
-    output.write_videofile(
-        str(destination),
-        fps=output.fps,
-        codec="libx264",
-        audio_codec="aac",
-        preset="medium",
-        ffmpeg_params=["-crf", str(_CRF[project.output.quality])],
-        pixel_format="yuv420p",
-        temp_audiofile_path=tempfile.gettempdir(),
-        logger=_ProgressLogger(on_progress) if on_progress else None,
+    return _write(
+        build_output(project, clips), destination, "medium", _CRF[project.output.quality], on_progress
     )
-    return destination
+
+
+def draft_project(
+    project: Project, clips: Sequence[VideoFileClip], draft: DraftSettings
+) -> Project:
+    """The Project that gives the Draft.
+
+    It is the same Output with the Draft's own Lead-in, Lead-out and width, and
+    with no sound unless the Draft asks for it. The Output Rate and the speeds
+    are the Output's. The text Overlay is sized in Output pixels, so it shrinks
+    with the picture. An Output narrower than the Draft width is not enlarged.
+    """
+    if draft.lead_in < 0 or draft.lead_out < 0 or draft.lead_in + draft.lead_out <= 0:
+        raise EditError("The Draft Lead-in plus Lead-out must be greater than zero")
+    if draft.width < 2:
+        raise EditError("The Draft width must be at least 2 pixels")
+    output = replace(project.output, lead_in=draft.lead_in, lead_out=draft.lead_out)
+    full_width = geometry(project, clips).layout.width
+    if draft.width < full_width:
+        text = output.text_overlay
+        if text is not None:
+            text = replace(text, size=max(4, round(text.size * draft.width / full_width)))
+        output = replace(output, width=draft.width, text_overlay=text)
+    return replace(
+        project, output=output, audio_source=project.audio_source if draft.sound else None
+    )
+
+
+def render_draft(
+    project: Project,
+    clips: Sequence[VideoFileClip],
+    destination: str | Path,
+    draft: DraftSettings,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Write the Draft and return where it was written."""
+    small = draft_project(project, clips, draft)
+    return _write(
+        build_output(small, clips, rough=True), Path(destination), "ultrafast", _DRAFT_CRF, on_progress
+    )

@@ -118,6 +118,20 @@ class OutputSettings:
 
 
 @dataclass(frozen=True)
+class DraftSettings:
+    """How the Draft differs from the Output it is a rough copy of."""
+
+    lead_in: float = 2.0
+    """Draft running time from the start of the Draft to the Sync Event."""
+    lead_out: float = 2.0
+    """Draft running time from the Sync Event to the end of the Draft."""
+    width: int = 640
+    """Draft width in pixels. An Output narrower than this is not enlarged."""
+    sound: bool = False
+    """Whether the Draft carries the sound the Output would have."""
+
+
+@dataclass(frozen=True)
 class Project:
     """The Sources and settings that produce one Output."""
 

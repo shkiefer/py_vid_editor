@@ -13,7 +13,7 @@ Each slice ends with something runnable.
 5. **Several Sources in one Row** (done) — height matching, Gaps, Audio Source.
 6. **Frame stepper** (done) — refine each Sync Point frame by frame.
 7. **Speed** (done) — Record Rate, Output Speed, Output Rate, Frame Hint.
-8. **Draft render.**
+8. **Draft render** (done) — a quick, small render around the Sync Event, written beside the Output.
 9. **Column, then grid** — width matching, Bars, Crop Hint.
 
 ## Decisions
@@ -61,7 +61,9 @@ Each slice ends with something runnable.
 - **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
 - **Output location**: written to a user-chosen folder, not offered as a browser download.
 - **Audio Source choice**: the first Source with sound, until the user picks another or "No sound". The Project file stores it as a Source number counted from 1.
-- **Draft** (slice 8): written to a temporary folder and replaced each time. Both Draft and full render show progress.
+- **Draft**: its main use is checking that the Sync Point renders as meant. It has its own Lead-in and Lead-out (2 s each to start), its own width (640 to start, never wider than the Output) and sound only when its box is ticked. The Output Rate, the speeds and the Overlays are the Output's. It is scaled with a quicker, rougher resize and encoded fast at low quality, and the text Overlay shrinks with the picture.
+- **Draft file**: written to the Output folder under the Output's file name with `_draft` added, and replaced each time without asking. It never replaces a Source file. It is not played in the app; an Open Draft button hands it to the program Windows uses for MP4 files. The Draft settings are saved in the Project file.
+- **Draft feedback**: the screen says how large and how long the Draft will be, where the Sync Event falls in it, whether it has sound and why not, how long it took, and when settings have changed since it was made. Both Draft and full render show progress.
 
 ### Overlays
 
@@ -76,7 +78,7 @@ Each slice ends with something runnable.
 - **Saving**: a Project has no file until Save Project as gives it one. From then on every change is written to that file, including a setting the Preview rejects and changes made while a Source file is missing. The file is replaced in one step, so a failed save never leaves half a file.
 - **Opening**: a setting the file does not mention takes its usual starting value, so older files still open. A value that cannot be used stops the file from opening and names the value.
 - **New Project** clears the screen and lets go of the Project file without changing it.
-- **Format 2** holds several Sources, the Audio Source, each Record Rate and the Output Speed. Format 1 files, which held one Source, still open.
+- **Format 2** holds several Sources, the Audio Source, each Record Rate, the Output Speed and the Draft settings. Format 1 files, which held one Source, still open.
 
 ## Known limits
 
@@ -85,6 +87,7 @@ Each slice ends with something runnable.
 - **A screen update takes about 0.25 s with two 1080p Sources** (it was 1.7 s before slice 6). About one step back in thirteen takes 0.8 s while ffmpeg restarts.
 - **The Preview at the Sync Event shows exactly the frame a stepped Sync Point names.** The rendered Output takes a frame every 1 / Output Rate seconds from its start, so it shows that same frame at the Sync Event only when the Lead-in is a whole number of Output frames.
 - **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
+- **A Draft of two 1080p Sources takes about 2 to 3 s for each second of a 60 frames per second Output**, against about 11 s at full size. Most of what is left is reading the Source files, so a smaller Draft is hardly quicker: 480 wide saved under 10% against 640.
 - **The app does not reopen the last Project on start.** Open Project is used each time.
 
 ## Open decisions
@@ -97,6 +100,5 @@ Each slice ends with something runnable.
 
 - Text label on each Panel.
 - More than one text or image Overlay, timed Overlays, colour choices.
-- Draft of a time window only.
 - Hosting for other users (needs upload handling).
 - Formats other than MP4.

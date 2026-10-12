@@ -83,13 +83,17 @@ _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
     ("image_corner", "image_overlay", "corner", Corner),
     ("image_width", "image_overlay", "width_percent", _number(float, 1, 100)),
     ("image_opacity", "image_overlay", "background_opacity", _number(float, 0, 1)),
+    ("draft_lead_in", "draft", "lead_in", _number(float, 0)),
+    ("draft_lead_out", "draft", "lead_out", _number(float, 0)),
+    ("draft_width", "draft", "width", _number(int, 2)),
+    ("draft_sound", "draft", "sound", _switch),
 )
-_SHARED_SECTIONS = ("output", "text_overlay", "image_overlay")
+_SHARED_SECTIONS = ("output", "text_overlay", "image_overlay", "draft")
 
 SOURCE_KEYS = tuple(key for key, *_ in _SOURCE_FIELDS if key != "path")
 """The settings each Source has, besides its path."""
 SHARED_KEYS = tuple(key for key, *_ in _SHARED_FIELDS)
-"""The settings that belong to the Output as a whole."""
+"""The settings that belong to the Output as a whole, and to its Draft."""
 
 
 @dataclass

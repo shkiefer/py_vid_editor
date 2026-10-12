@@ -648,3 +648,104 @@ def test_speed_settings_are_saved_and_reopened(source_path, tmp_path, monkeypatc
     assert app.number_input(key="record_rate_1").value == 40.0
     assert app.number_input(key="speed_custom").value == 0.5
     assert "Output Speed 0.5" in captions(app)
+
+
+def test_a_draft_is_written_beside_the_output_with_its_own_settings(
+    source_path, tmp_path, monkeypatch
+):
+    app = open_app(source_path)
+    app.text_input(key="out_folder").set_value(str(tmp_path))
+    app.text_input(key="out_name").set_value("result.mp4")
+    app.number_input(key="sync_point_1").set_value(2.0).run()
+    assert app.number_input(key="draft_width").value == 640
+    assert not app.checkbox(key="draft_sound").value
+    app.number_input(key="draft_lead_in").set_value(1.0)
+    app.number_input(key="draft_lead_out").set_value(0.5)
+    app.number_input(key="draft_width").set_value(80).run()
+    assert (
+        "The Draft will be 80 by 60 pixels (50% of the Output's size) at low picture quality, "
+        "without sound. It runs for 1.500 s at 10 frames per second and Output Speed 1, "
+        "with the Sync Event 1.000 s in." in captions(app)
+    )
+
+    app.button(key="make_draft").click().run()
+
+    assert not app.exception
+    written = tmp_path / "result_draft.mp4"
+    assert str(written) in app.success[0].value
+    assert not (tmp_path / "result.mp4").exists()
+    with VideoFileClip(str(written)) as draft:
+        assert draft.size == [80, 60]
+        assert draft.duration == pytest.approx(1.5, abs=0.15)
+        assert draft.audio is None
+        assert file_time_shown(draft.get_frame(1.0)) == pytest.approx(2.0, abs=0.3)
+    assert not app.warning
+
+    # The Output's own Lead-out is not part of the Draft; the Sync Point is.
+    app.number_input(key="lead_out").set_value(1.0).run()
+    assert not app.warning
+    app.number_input(key="sync_point_1").set_value(1.0).run()
+    assert "Settings have changed since this Draft was made" in app.warning[0].value
+
+    opened = []
+    monkeypatch.setattr(dialogs, "open_file", opened.append)
+    app.button(key="open_draft").click().run()
+    assert opened == [str(written)]
+
+
+def test_a_draft_needs_an_output_folder_and_never_replaces_a_source(source_path, tmp_path):
+    source = tmp_path / "clip_draft.mp4"
+    shutil.copy(source_path, source)
+    app = open_app(str(source))
+    app.text_input(key="out_folder").set_value(str(tmp_path))
+    app.text_input(key="out_name").set_value("clip.mp4").run()
+    assert app.button(key="make_draft").disabled
+    assert any("would replace the Source file clip_draft.mp4" in warning.value for warning in app.warning)
+
+    app.text_input(key="out_name").set_value("other.mp4").run()
+    assert not app.button(key="make_draft").disabled
+
+    app.text_input(key="out_folder").set_value("").run()
+    assert app.button(key="make_draft").disabled
+    assert any("The Draft is written beside the Output" in warning.value for warning in app.warning)
+
+
+def test_draft_sound_follows_the_output_and_says_why_when_there_is_none(source_path):
+    app = open_app(source_path)
+    app.checkbox(key="draft_sound").check().run()
+    assert "with sound from Source 1" in captions(app)
+    app.number_input(key="record_rate_1").set_value(40.0).run()
+    assert "without sound, because Source 1 is not real time" in captions(app)
+
+
+def test_draft_settings_are_saved_and_reopened(source_path, tmp_path, monkeypatch):
+    project = tmp_path / "project.json"
+    app = open_app(source_path)
+    save_project_as(app, project, monkeypatch)
+    app.number_input(key="draft_lead_in").set_value(0.5)
+    app.number_input(key="draft_width").set_value(320)
+    app.checkbox(key="draft_sound").check().run()
+    assert saved(project)["draft"] == {"lead_in": 0.5, "lead_out": 2.0, "width": 320, "sound": True}
+
+    again = AppTest.from_file(APP, default_timeout=60)
+    again.run()
+    open_project(again, project, monkeypatch)
+    assert not again.exception
+    assert again.number_input(key="draft_lead_in").value == 0.5
+    assert again.number_input(key="draft_width").value == 320
+    assert again.checkbox(key="draft_sound").value
+
+
+def test_a_setting_that_can_be_left_empty_can_be_emptied_again(source_path):
+    app = open_app(source_path)
+    app.number_input(key="record_rate_1").set_value(40.0)
+    app.number_input(key="source_width_1").set_value(80)
+    app.number_input(key="out_width").set_value(80)
+    app.number_input(key="out_rate").set_value(20.0).run()
+    for key in ("record_rate_1", "source_width_1", "out_width", "out_rate"):
+        # With no default to fall back on, emptying the field leaves it empty.
+        assert not app.number_input(key=key).proto.HasField("default"), key
+
+    app.number_input(key="record_rate_1").set_value(None).run()
+    assert not app.exception
+    assert "Source Speed 1: this file shows the real event in real time." in captions(app)

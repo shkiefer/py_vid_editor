@@ -1,5 +1,6 @@
 """Video editor screen. Run with: uv run streamlit run streamlit_app.py"""
 
+import time
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from vid_editor import dialogs, project_file
 from vid_editor.model import (
     Corner,
     Crop,
+    DraftSettings,
     ImageOverlay,
     OutputSettings,
     Project,
@@ -22,6 +24,7 @@ from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patc
 from vid_editor.timing import frame_at, source_speed, step_frames
 from vid_editor.render import (
     EditError,
+    draft_project,
     fit_within,
     frame_hints,
     geometry,
@@ -29,6 +32,7 @@ from vid_editor.render import (
     output_rate,
     preview,
     render,
+    render_draft,
     silence_reason,
     source_info,
     span_of,
@@ -108,7 +112,7 @@ def new_project() -> None:
     state = st.session_state
     for source_id in list(state.get("source_ids", [])):
         remove_source(source_id)
-    for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render"):
+    for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render", "draft"):
         state.pop(key, None)
     state.update(
         project_path=None, saved_text=None, saved_at=None, audio_chosen=False
@@ -317,9 +321,18 @@ for key, value in {
     "out_name": f"{first_path.stem}_edited.mp4",
     "preview_offset": 0.0,
     "last_render": None,
+    "draft": None,
+    "draft_lead_in": DraftSettings.lead_in,
+    "draft_lead_out": DraftSettings.lead_out,
+    "draft_width": DraftSettings.width,
+    "draft_sound": DraftSettings.sound,
     **OVERLAY_DEFAULTS,
 }.items():
     state.setdefault(key, value)
+# The Draft settings sit below the Preview, which is not drawn while something
+# is wrong. Setting them here keeps them from being forgotten in the meantime.
+for key in ("draft_lead_in", "draft_lead_out", "draft_width", "draft_sound"):
+    state[key] = state[key]
 
 
 def source_label(source_id: int) -> str:
@@ -435,9 +448,12 @@ with settings:
                         key=f"turn_right_{source_id}",
                     )
 
+                # Without value=None a field that holds a number cannot be emptied
+                # again: Streamlit puts its smallest allowed value there instead.
                 record_rate = st.number_input(
                     "Record Rate (frames per second)",
                     key=f"record_rate_{source_id}",
+                    value=None,
                     min_value=0.001,
                     step=1.0,
                     placeholder=f"Same as the Playback Rate ({info.playback_rate:g}): real time",
@@ -467,6 +483,7 @@ with settings:
                 st.number_input(
                     "Resize to width (px)",
                     key=f"source_width_{source_id}",
+                    value=None,
                     min_value=2,
                     step=10,
                     placeholder="Cropped size" if sets_row_height else "Matched to the Row height",
@@ -520,6 +537,7 @@ with settings:
         size_columns[0].number_input(
             "Output width (px)",
             key="out_width",
+            value=None,
             min_value=2,
             step=2,
             placeholder="Natural size",
@@ -528,6 +546,7 @@ with settings:
         size_columns[1].number_input(
             "Output Rate (frames per second)",
             key="out_rate",
+            value=None,
             min_value=1.0,
             max_value=240.0,
             step=1.0,
@@ -891,6 +910,125 @@ with result:
             "Frame Hint": [str(hint) for hint in hints],
         }
     )
+
+    st.subheader("Draft")
+    # The Draft goes beside the Output, under the Output's name with "_draft" added.
+    draft_file = None
+    if state.out_folder.strip() and state.out_name.strip():
+        draft_file = Path(clean(state.out_folder)) / f"{Path(state.out_name.strip()).stem}_draft.mp4"
+    draft_columns = st.columns(4, vertical_alignment="bottom")
+    draft_columns[0].number_input(
+        "Draft Lead-in (s)",
+        key="draft_lead_in",
+        min_value=0.0,
+        step=0.5,
+        format="%.3f",
+        help="Draft running time from the start of the Draft to the Sync Event.",
+    )
+    draft_columns[1].number_input(
+        "Draft Lead-out (s)",
+        key="draft_lead_out",
+        min_value=0.0,
+        step=0.5,
+        format="%.3f",
+        help="Draft running time from the Sync Event to the end of the Draft.",
+    )
+    draft_columns[2].number_input(
+        "Draft width (px)",
+        key="draft_width",
+        min_value=16,
+        step=16,
+        help="The height follows from the picture. An Output narrower than this is not enlarged.",
+    )
+    draft_columns[3].checkbox(
+        "Draft sound", key="draft_sound", help="Carry the sound the Output would have."
+    )
+    draft_settings = DraftSettings(
+        lead_in=state.draft_lead_in,
+        lead_out=state.draft_lead_out,
+        width=state.draft_width,
+        sound=state.draft_sound,
+    )
+    small = None
+    try:
+        small = draft_project(project, row_clips, draft_settings)
+        draft_size = geometry(small, row_clips).layout
+        draft_silent = silence_reason(small, row_clips)
+    except EditError as error:
+        small = None
+        st.error(str(error), icon=":material/error:")
+    else:
+        draft_time = small.output.running_time
+        if not state.draft_sound:
+            draft_sound = "without sound"
+        elif draft_silent:
+            draft_sound = f"without sound, because {draft_silent}"
+        else:
+            draft_sound = f"with sound from Source {audio_source + 1}"
+        st.caption(
+            f"The Draft will be {draft_size.width} by {draft_size.height} pixels "
+            f"({draft_size.width / width:.0%} of the Output's size) at low picture quality, "
+            f"{draft_sound}. It runs for {draft_time:.3f} s at {rate:g} frames per second and "
+            f"Output Speed {speed.output:.3g}, with the Sync Event {state.draft_lead_in:.3f} s in."
+        )
+
+    draft_problem = None
+    if draft_file is None:
+        draft_problem = "Choose an Output folder and file name. The Draft is written beside the Output."
+    elif any(draft_file.resolve() == Path(path).resolve() for path in paths.values()):
+        draft_problem = f"The Draft would replace the Source file {draft_file.name}."
+    if draft_problem:
+        st.warning(draft_problem, icon=":material/warning:")
+    elif small is not None:
+        st.caption(f"It is written to {draft_file}, replacing the Draft before it.")
+
+    if st.button(
+        "Make Draft",
+        icon=":material/play_circle:",
+        key="make_draft",
+        disabled=small is None or bool(draft_problem),
+    ):
+        bar = st.progress(0.0, text="Starting")
+        started = time.perf_counter()
+        try:
+            # Separate readers, so the cached Preview readers are left alone.
+            with ExitStack() as readers:
+                fresh_clips = [
+                    readers.enter_context(open_source(source.path)) for source in project.sources
+                ]
+                render_draft(
+                    project,
+                    fresh_clips,
+                    draft_file,
+                    draft_settings,
+                    on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
+                )
+        except (EditError, OSError) as error:
+            bar.empty()
+            st.error(f"The Draft failed: {error}", icon=":material/error:")
+            st.stop()
+        bar.empty()
+        state.draft = {
+            "project": small,
+            "path": str(draft_file),
+            "seconds": time.perf_counter() - started,
+        }
+
+    if state.draft and Path(state.draft["path"]).is_file():
+        st.success(
+            f"Draft written to {state.draft['path']} in {state.draft['seconds']:.1f} s",
+            icon=":material/check_circle:",
+        )
+        if state.draft["project"] != small:
+            st.warning(
+                "Settings have changed since this Draft was made. Make it again to see them.",
+                icon=":material/warning:",
+            )
+        if st.button("Open Draft", icon=":material/open_in_new:", key="open_draft"):
+            try:
+                dialogs.open_file(state.draft["path"])
+            except OSError as error:
+                st.error(f"The Draft could not be opened: {error}", icon=":material/error:")
 
     st.subheader("Render")
     destination = Path(clean(state.out_folder)) / state.out_name.strip()

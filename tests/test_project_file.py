@@ -41,6 +41,10 @@ SHARED = {
     "image_corner": Corner.TOP_RIGHT,
     "image_width": 25.0,
     "image_opacity": 0.5,
+    "draft_lead_in": 1.5,
+    "draft_lead_out": 0.5,
+    "draft_width": 480,
+    "draft_sound": True,
 }
 SETTINGS = ProjectSettings(
     sources=[SOURCE, SOURCE | {"path": r"C:\videos\camera_b.mp4", "sync_point": 0.75}],
@@ -72,6 +76,7 @@ def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     assert document["output"]["speed"] == "Custom" and document["output"]["custom_speed"] == 0.5
     assert document["sources"][0]["record_rate"] == 240.0
     assert document["text_overlay"]["corner"] == "Bottom left"
+    assert document["draft"] == {"lead_in": 1.5, "lead_out": 0.5, "width": 480, "sound": True}
     # An Overlay that is switched off keeps its settings.
     assert document["text_overlay"]["on"] is False
     assert "Proprietary – Do Not Distribute" in project_file.dumps(SETTINGS)

@@ -1,5 +1,6 @@
 """The Preview and the rendered Output for one Source."""
 
+import gc
 from dataclasses import replace
 
 import pytest
@@ -11,6 +12,7 @@ from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from vid_editor.model import (
     Corner,
     Crop,
+    DraftSettings,
     ImageOverlay,
     OutputSettings,
     Project,
@@ -21,12 +23,14 @@ from vid_editor.model import (
 from vid_editor.render import (
     EditError,
     build_output,
+    draft_project,
     edited_size,
     geometry,
     fit_within,
     open_source,
     preview,
     render,
+    render_draft,
     silence_reason,
     source_frame,
     source_info,
@@ -572,3 +576,82 @@ def test_render_changes_speed_and_keeps_the_running_time(
         assert file_time_shown(early[:, :160]) == pytest.approx(1.625, abs=3 * FRAME)
         assert file_time_shown(late[:, :160]) == pytest.approx(2.375, abs=3 * FRAME)
         assert file_time_shown(late[:, 160:]) == pytest.approx(1.75, abs=3 * FRAME)
+
+
+# ---------------------------------------------------------------------- Draft
+
+
+def test_a_draft_is_a_smaller_output_with_its_own_lead_in_and_lead_out(
+    source_path, tall_source_path, source_clip, tall_source_clip, tmp_path
+):
+    project = pair(source_path, tall_source_path, lead_in=0.5, lead_out=0.5)
+    clips = [source_clip, tall_source_clip]
+    full = geometry(project, clips).layout
+    progress = []
+
+    written = render_draft(
+        project,
+        clips,
+        tmp_path / "drafts" / "draft.mp4",
+        DraftSettings(lead_in=2.0, lead_out=1.0, width=110),
+        on_progress=lambda stage, fraction: progress.append((stage, fraction)),
+    )
+
+    assert progress[-1] == ("picture", 1.0)
+    with VideoFileClip(str(written)) as result:
+        assert result.duration == pytest.approx(3.0, abs=0.15)
+        assert result.fps == pytest.approx(20)
+        assert result.w == 110
+        assert result.h == pytest.approx(full.height * 110 / full.width, abs=2)
+        assert result.audio is None
+        left_width = round(full.panel_widths[0] * 110 / full.width)
+        frame = result.get_frame(2.0)
+        assert file_time_shown(frame[:, : left_width - 4]) == pytest.approx(2.0, abs=3 * FRAME)
+        assert is_black(result.get_frame(0.5)[:, left_width + 4 :])  # the tall Source's front Gap
+
+
+def test_a_draft_has_sound_only_when_asked(source_path, source_clip, tmp_path):
+    project = project_for(Source(source_path, sync_point=2.0))
+    quiet = draft_project(project, [source_clip], DraftSettings())
+    loud = draft_project(project, [source_clip], DraftSettings(sound=True))
+    assert quiet.audio_source is None and loud.audio_source == 0
+
+    written = render_draft(
+        project, [source_clip], tmp_path / "draft.mp4", DraftSettings(1.0, 1.0, sound=True)
+    )
+    with VideoFileClip(str(written)) as result:
+        assert result.audio is not None
+
+
+def test_a_draft_shrinks_the_text_overlay_with_the_picture(source_path, source_clip):
+    project = project_for(Source(source_path), text_overlay=TextOverlay("Hi", size=24))
+    small = draft_project(project, [source_clip], DraftSettings(width=80))
+    assert small.output.width == 80
+    assert small.output.text_overlay.size == 12
+    assert small.sources == project.sources
+
+
+def test_a_draft_never_enlarges_the_output(source_path, source_clip):
+    project = project_for(Source(source_path), text_overlay=TextOverlay("Hi", size=24))
+    small = draft_project(project, [source_clip], DraftSettings(width=640))
+    assert small.output.width is None
+    assert small.output.text_overlay.size == 24
+
+
+def test_a_draft_with_no_running_time_is_an_edit_error(source_path, source_clip):
+    with pytest.raises(EditError, match="Draft Lead-in plus Lead-out"):
+        draft_project(project_for(Source(source_path)), [source_clip], DraftSettings(0.0, 0.0))
+
+
+def test_frames_kept_for_stepping_are_dropped_when_their_file_is_closed(source_path):
+    from vid_editor import render as render_module
+
+    clip = open_source(source_path)
+    source_frame(clip, 1.0)
+    reader = id(clip.reader)
+    assert any(key[0] == reader for key in render_module._recent_frames)
+
+    clip.close()
+    del clip
+    gc.collect()
+    assert not any(key[0] == reader for key in render_module._recent_frames)

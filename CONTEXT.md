@@ -27,7 +27,7 @@ The one **Source** whose sound is used in the **Output**.
 _Avoid_: Audio track, sound file, master audio
 
 **Draft**:
-A small, low-quality render of the whole **Output**, made only for checking it in motion.
+A small, low-quality render of a stretch of the **Output** around the **Sync Event**, made only for checking it in motion.
 _Avoid_: Preview video, proxy, test render
 
 **Overlay**:
@@ -112,8 +112,10 @@ _Avoid_: Padding, filler, freeze
 
 - A **Project** produces exactly one **Output** and refers to its **Sources** by file location; it never contains video data
 - A **Project** is saved automatically after every change, once the user has chosen where to keep it
-- A **Draft** covers the same running time as the **Output** and is thrown away; it is never the deliverable
-- The **Preview** checks one instant; the **Draft** checks motion, such as drift from a wrong **Record Rate**
+- A **Draft** is thrown away; it is never the deliverable
+- A **Draft** has its own **Lead-in**, **Lead-out** and width, and has sound only when asked
+- A **Draft** has the same **Output Rate**, **Output Speed** and **Overlays** as the **Output**, so the **Sync Event** looks in it as it will in the **Output**
+- The **Preview** checks one instant; the **Draft** checks motion, such as a wrong **Sync Point** or drift from a wrong **Record Rate**
 - A **Project** whose **Source** file has moved keeps that **Source**'s settings until the file is located again
 - An **Output** is built from one or more **Sources**; a single **Source** is not a separate mode
 - Each **Source** fills exactly one **Panel**

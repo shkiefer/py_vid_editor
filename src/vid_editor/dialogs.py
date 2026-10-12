@@ -5,6 +5,7 @@ machine as the browser. Each dialog runs in its own short-lived process:
 tkinter needs the main thread, and Streamlit runs scripts on worker threads.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -94,3 +95,8 @@ def pick_project_to_save(initial_dir: str = "") -> str | None:
 def pick_folder(initial_dir: str = "") -> str | None:
     """Ask the user for a folder. Returns None if they cancel."""
     return _ask("folder", initial_dir)
+
+
+def open_file(path: str | Path) -> None:
+    """Open a file in the program Windows uses for its type."""
+    os.startfile(path)
