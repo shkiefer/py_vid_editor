@@ -86,14 +86,14 @@ class Source:
     aspect_override: tuple[int, int] | None = None
     """Forced (width, height) in pixels, applied before rotation."""
     width: int | None = None
-    """Width in pixels to resize to, applied after the crop. The height follows
-    without distortion. None keeps the cropped size."""
+    """Width to resize to, applied after the crop, in the same typed pixels as
+    the Panel sizes. The height follows without distortion. None fits the
+    Source inside its Panel."""
     record_rate: float | None = None
     """Record Rate in frames per second. None means the file's Playback Rate,
     which makes the Source real time."""
-    row: int = 1
-    """The Row the Source sits in, counted from 1 at the top. Only the order
-    of the numbers counts, so Rows 1 and 3 with no Row 2 are two Rows."""
+    panel: int = 0
+    """Position in the Project's `panels` of the Panel the Source is assigned to."""
 
 
 @dataclass(frozen=True)
@@ -135,12 +135,25 @@ class DraftSettings:
 
 
 @dataclass(frozen=True)
+class Panel:
+    """An area of the Output, set up in the layout, with a size typed by the user."""
+
+    width: int
+    height: int
+    row: int = 1
+    """The Row the Panel sits in, counted from 1 at the top. Only the order of
+    the numbers counts, so Rows 1 and 3 with no Row 2 are two Rows."""
+
+
+@dataclass(frozen=True)
 class Project:
-    """The Sources and settings that produce one Output."""
+    """The Panels, Sources and settings that produce one Output."""
 
     sources: tuple[Source, ...]
-    """In the order added, which is left to right within each Row. The first
-    sets the height of the first Row and the width of the first Column."""
+    """In the order added."""
     output: OutputSettings
-    audio_source: int | None = 0
-    """Position in `sources` of the Audio Source. None gives an Output with no sound."""
+    panels: tuple[Panel, ...]
+    """In their listed order, which is left to right within each Row. A Panel
+    that no Source is assigned to is empty, and black."""
+    audio_panel: int | None = 0
+    """Position in `panels` of the Audio Panel. None gives an Output with no sound."""

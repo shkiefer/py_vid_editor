@@ -65,7 +65,7 @@ def test_a_new_source_defaults_to_the_whole_file(source_path):
     assert app.number_input(key="lead_in").value == 0
     assert app.number_input(key="lead_out").value == pytest.approx(4.0, abs=0.15)
     assert app.number_input(key="out_rate").value is None
-    assert "at 10 frames per second, with sound from Source 1" in captions(app)
+    assert "at 10 frames per second, with sound from Panel 1" in captions(app)
     assert app.text_input(key="out_name").value == "source_edited.mp4"
     row = timing_row(app)
     assert row["Front Gap (s)"] == "0.000" and row["Back Gap (s)"] == "0.000"
@@ -105,17 +105,61 @@ def test_an_impossible_crop_is_reported_without_crashing(source_path):
     assert "removes the whole picture" in app.error[0].value
 
 
-def test_resizing_the_source_reports_both_sizes_and_sets_the_output_size(source_path):
+def test_cropping_or_resizing_a_source_reports_how_it_sits_and_leaves_the_panel_alone(source_path):
     app = open_app(source_path)
-    assert any("this Source is 160 by 120 pixels." in caption.value for caption in app.caption)
-    app.number_input(key="crop_left_1").set_value(80)
+    assert (
+        "After rotation and crop this Source is 160 by 120 pixels. Panel 1 is 160 by 120 pixels. "
+        "Fitted inside it, the Source is 160 by 120 pixels (100% of that size) and fills the Panel."
+        in captions(app)
+    )
+    app.number_input(key="crop_left_1").set_value(80).run()
+    assert (
+        "this Source is 80 by 120 pixels. Panel 1 is 160 by 120 pixels. Fitted inside it, the "
+        "Source is 80 by 120 pixels (100% of that size), with Bars of 40 pixels left and right. "
+        "Crop Hint: crop 60 pixels of height, to 60 high, and it fills the Panel." in captions(app)
+    )
     app.number_input(key="source_width_1").set_value(40).run()
     assert not app.exception
-    assert any(
-        "this Source is 80 by 120 pixels, resized to 40 by 60 (50% of that size)." in caption.value
-        for caption in app.caption
+    assert (
+        "At its resize width of 40, the Source is 40 by 60 pixels (50% of that size), with Bars "
+        "of 60 pixels left and right and 30 pixels above and below. Bars at a typed width go "
+        "when the Source is scaled to the Panel." in captions(app)
     )
-    assert any("Output is 40 by 60" in caption.value for caption in app.caption)
+    assert "Output is 160 by 120" in captions(app)
+
+
+def test_the_scale_buttons_fill_in_the_resize_once(source_path):
+    app = open_app(source_path)
+    app.number_input(key="pn_width_1").set_value(80).run()
+    assert "Fitted inside it, the Source is 80 by 60 pixels (50% of that size)" in captions(app)
+
+    # As high as the 80 by 120 Panel, the Source is 160 wide and its sides are cut off.
+    app.button(key="scale_height_1").click().run()
+    assert app.number_input(key="source_width_1").value == 160
+    assert (
+        "At its resize width of 160, the Source is 160 by 120 pixels (100% of that size). "
+        "The Panel cuts off 40 pixels left and right. Crop Hint: what is cut off is 80 pixels "
+        "of the Source's width, half from each side." in captions(app)
+    )
+    app.button(key="scale_width_1").click().run()
+    assert app.number_input(key="source_width_1").value == 80
+
+    # The button acted once: a later crop leaves the typed width as it is.
+    app.number_input(key="crop_top_1").set_value(60).run()
+    assert app.number_input(key="source_width_1").value == 80
+    assert "the Source is 80 by 30 pixels (50% of that size)" in captions(app)
+
+    app.number_input(key="source_width_1").set_value(None).run()
+    assert "Fitted inside it, the Source is 80 by 30 pixels" in captions(app)
+
+
+def test_the_output_width_scales_the_typed_layout(source_path):
+    app = open_app(source_path)
+    app.number_input(key="out_width").set_value(80).run()
+    assert "80 by 60 pixels in the Output (50% of the typed size)." in captions(app)
+    assert "Panel 1 is 80 by 60 pixels. Fitted inside it, the Source is 80 by 60 pixels" in captions(app)
+    assert "Output is 80 by 60" in captions(app)
+    assert app.number_input(key="pn_width_1").value == 160
 
 
 def test_overlays_are_off_until_switched_on_and_then_report_their_size(source_path):
@@ -177,6 +221,7 @@ def test_render_writes_the_output_to_the_chosen_folder(source_path, tmp_path):
     app.number_input(key="lead_in").set_value(2.0)
     app.number_input(key="lead_out").set_value(1.0)
     app.number_input(key="crop_left_1").set_value(80)
+    app.number_input(key="pn_width_1").set_value(80)
     app.text_input(key="out_folder").set_value(str(tmp_path))
     app.text_input(key="out_name").set_value("result.mp4").run()
     app.button(key="render").click().run()
@@ -247,7 +292,8 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
     app = open_app(source_path)
     app.number_input(key="sync_point_1").set_value(1.5).run()
     save_project_as(app, project, monkeypatch)
-    assert saved(project)["format"] == 2 and saved(project)["audio_source"] == 1
+    assert saved(project)["format"] == 3 and saved(project)["audio_panel"] == 1
+    assert saved(project)["panels"] == [{"row": 1, "width": 160, "height": 120}]
     assert saved(project)["sources"][0] | {"crop": None, "aspect_override": None} == {
         "path": source_path,
         "sync_point": 1.5,
@@ -255,7 +301,7 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
         "crop": None,
         "width": None,
         "record_rate": None,
-        "row": 1,
+        "panel": 1,
         "aspect_override": None,
     }
     assert any(f"Project file: {project}" in caption.value for caption in app.caption)
@@ -297,7 +343,10 @@ def test_opening_a_project_restores_every_setting(source_path, tmp_path, monkeyp
     assert not app.toggle(key="text_on").value
     assert app.text_area(key="text_value").value == "Test 14"
     assert app.number_input(key="text_size").value == 12
-    assert any("Output is 70 by 60" in caption.value for caption in app.caption)
+    # The Panel came back at its typed size; the resize is the Source's own.
+    assert app.number_input(key="pn_width_1").value == 160
+    assert any("Output is 160 by 120" in caption.value for caption in app.caption)
+    assert "At its resize width of 70, the Source is 70 by 60 pixels" in captions(app)
 
 
 def test_a_moved_source_keeps_its_settings_until_it_is_located(source_path, tmp_path, monkeypatch):
@@ -362,27 +411,29 @@ def test_a_project_file_from_before_several_sources_still_opens(source_path, tmp
     assert app.number_input(key="crop_left_1").value == 20
     assert app.number_input(key="out_rate").value == 10
     assert "Output is 140 by 120 pixels and runs for 3.000 s" in captions(app)
-    assert "sound from Source 1" in captions(app)
+    assert "sound from Panel 1" in captions(app)
 
 
 # ------------------------------------------------------------ Several Sources
 
 
-def test_sources_are_placed_side_by_side_and_matched_in_height(source_path, tall_source_path):
+def test_each_source_added_gets_a_panel_beside_the_last_at_the_row_height(
+    source_path, tall_source_path
+):
     app = open_app(source_path, tall_source_path)
-    # The 100 by 200 Source is scaled to the 120 high Row: 60 wide.
+    # The new Panel takes the 120 high Row and fits the 100 by 200 Source: 60 wide.
     assert "Output is 220 by 120 pixels" in captions(app)
-    assert "It sets the Row height. Its Panel is 160 by 120 pixels." in captions(app)
+    assert [app.number_input(key=f"pn_width_{panel}").value for panel in (1, 2)] == [160, 60]
+    assert [app.number_input(key=f"pn_height_{panel}").value for panel in (1, 2)] == [120, 120]
     assert (
-        "After rotation and crop this Source is 100 by 200 pixels. Scaled to the Row height, "
-        "its Panel is 60 by 120 pixels (60% of that size)." in captions(app)
+        "After rotation and crop this Source is 100 by 200 pixels. Panel 2 is 60 by 120 pixels. "
+        "Fitted inside it, the Source is 60 by 120 pixels (60% of that size) and fills the Panel."
+        in captions(app)
     )
-    # Only the first Source can be resized; the rest follow the Row height.
-    assert not app.number_input(key="source_width_1").disabled
-    assert app.number_input(key="source_width_2").disabled
-
+    # Every Source has its own resize, and none of them moves the layout.
+    assert not app.number_input(key="source_width_2").disabled
     app.number_input(key="source_width_1").set_value(80).run()
-    assert "Output is 110 by 60 pixels" in captions(app)
+    assert "Output is 220 by 120 pixels" in captions(app)
 
 
 def test_each_source_has_its_own_sync_point_and_gaps(source_path, tall_source_path):
@@ -415,14 +466,14 @@ def test_the_output_rate_defaults_to_the_highest_playback_rate(source_path, tall
     assert "at 15 frames per second" in captions(app)
 
 
-def test_the_audio_source_is_the_first_source_with_sound_until_chosen(source_path, tall_source_path):
+def test_the_audio_panel_is_the_first_panel_with_sound_until_chosen(source_path, tall_source_path):
     app = open_app(tall_source_path)
     assert app.selectbox(key="audio_pick").options == ["No sound"]
     assert "with no sound" in captions(app)
 
     add_source(app, source_path)
-    assert app.selectbox(key="audio_pick").options == ["No sound", "Source 2: source.mp4"]
-    assert "with sound from Source 2" in captions(app)
+    assert app.selectbox(key="audio_pick").options == ["No sound", "Panel 2: Source 2: source.mp4"]
+    assert "with sound from Panel 2" in captions(app)
 
     app.selectbox(key="audio_pick").set_value(0).run()
     assert "with no sound" in captions(app)
@@ -435,15 +486,24 @@ def test_a_problem_names_the_source_it_belongs_to(source_path, tall_source_path)
     assert "Source 2: The crop removes the whole picture" in app.error[0].value
 
 
-def test_removing_a_source_closes_up_the_row(source_path, tall_source_path):
+def test_removing_a_source_leaves_its_panel_in_place_and_empty(source_path, tall_source_path):
     app = open_app(source_path, tall_source_path)
     app.number_input(key="sync_point_2").set_value(0.5).run()
+    assert app.button(key="panel_remove_1").disabled  # it holds a Source
     app.button(key="remove_1").click().run()
     assert not app.exception
-    assert "Output is 100 by 200 pixels" in captions(app)
+    # The layout has not moved: Panel 1 is still there, and black.
+    assert "Output is 220 by 120 pixels" in captions(app)
+    assert "Panel 1 is empty and is black in the Output." in app.info[0].value
     assert timing_row(app)["Source"] == "Source 1: tall.mp4"
     assert app.number_input(key="sync_point_2").value == 0.5
-    assert not app.number_input(key="source_width_2").disabled
+    assert "Panel 2 is 60 by 120 pixels" in captions(app)
+
+    # An empty Panel can be removed, and the Row then closes up.
+    app.button(key="panel_remove_1").click().run()
+    assert "Output is 60 by 120 pixels" in captions(app)
+    assert "Panel 1 is 60 by 120 pixels" in captions(app)
+    assert not app.info
 
     app.button(key="remove_2").click().run()
     assert "Add a Source file" in app.info[0].value
@@ -461,7 +521,7 @@ def test_a_project_with_several_sources_is_saved_and_reopened(
     save_project_as(first, project, monkeypatch)
     document = saved(project)
     assert [Path(source["path"]).name for source in document["sources"]] == ["tall.mp4", "source.mp4"]
-    assert document["audio_source"] is None
+    assert document["audio_panel"] is None
 
     app = open_app()
     open_project(app, project, monkeypatch)
@@ -469,8 +529,8 @@ def test_a_project_with_several_sources_is_saved_and_reopened(
     assert app.number_input(key="sync_point_2").value == 2.0
     assert app.number_input(key="crop_left_2").value == 80
     assert app.selectbox(key="audio_pick").value == 0
-    # 100 by 200, then 80 by 120 scaled to 200 high: 133 wide.
-    assert "Output is 232 by 200 pixels" in captions(app)
+    # Panel 2 keeps the 268 by 200 it started at; cropping its Source does not resize it.
+    assert "Output is 368 by 200 pixels" in captions(app)
 
 
 def test_one_moved_source_does_not_lose_the_settings_of_any(
@@ -576,7 +636,7 @@ def test_a_real_time_source_is_shown_at_real_time_with_its_sound(source_path):
     assert "Source Speed 1: this file shows the real event in real time." in captions(app)
     assert "Output Speed 1: the 4.000 s Output shows 4.000 s of the real event." in captions(app)
     assert speed_row(app) == ("1", "every frame shown once")
-    assert "with sound from Source 1. Output Speed 1." in captions(app)
+    assert "with sound from Panel 1. Output Speed 1." in captions(app)
     assert not app.warning
 
 
@@ -714,7 +774,7 @@ def test_a_draft_needs_an_output_folder_and_never_replaces_a_source(source_path,
 def test_draft_sound_follows_the_output_and_says_why_when_there_is_none(source_path):
     app = open_app(source_path)
     app.checkbox(key="draft_sound").check().run()
-    assert "with sound from Source 1" in captions(app)
+    assert "with sound from Panel 1" in captions(app)
     app.number_input(key="record_rate_1").set_value(40.0).run()
     assert "without sound, because Source 1 is not real time" in captions(app)
 
@@ -752,69 +812,120 @@ def test_a_setting_that_can_be_left_empty_can_be_emptied_again(source_path):
     assert "Source Speed 1: this file shows the real event in real time." in captions(app)
 
 
-def test_a_source_in_a_row_of_its_own_sits_under_row_1_matched_in_width(
-    source_path, tall_source_path, tmp_path
-):
-    app = open_app(source_path, tall_source_path)
-    assert app.number_input(key="row_1").disabled
-    app.number_input(key="row_2").set_value(2).run()
+# ---------------------------------------------------------------- Typed Panels
 
+
+def test_a_panel_given_another_row_sits_under_row_1(source_path, tall_source_path, tmp_path):
+    app = open_app(source_path, tall_source_path)
+    app.number_input(key="pn_row_2").set_value(2).run()
     assert not app.exception
-    text = captions(app)
-    assert "It sets the height of Row 1 and the width of Column 1. Its Panel is 160 by 120 pixels." in text
+    # The Panel keeps its typed 60 by 120, centred under the 160 wide Row 1.
+    assert "Output is 160 by 240 pixels, in 2 Rows and runs" in captions(app)
+
+    app.number_input(key="pn_width_2").set_value(160)
+    app.number_input(key="pn_height_2").set_value(320).run()
+    assert "Output is 160 by 440 pixels, in 2 Rows" in captions(app)
     assert (
-        "Scaled to the width of Column 1, its Panel is 160 by 320 pixels (160% of that size). "
-        "It is in Row 2, Column 1, and sets the height of Row 2." in text
+        "Panel 2 is 160 by 320 pixels. Fitted inside it, the Source is 160 by 320 pixels "
+        "(160% of that size) and fills the Panel." in captions(app)
     )
-    assert "Output is 160 by 440 pixels, in 2 Rows and 1 Column and runs" in text
 
     app.text_input(key="out_folder").set_value(str(tmp_path))
-    app.text_input(key="out_name").set_value("column.mp4").run()
+    app.text_input(key="out_name").set_value("rows.mp4").run()
     app.button(key="render").click().run()
     assert not app.exception
-    with VideoFileClip(str(tmp_path / "column.mp4")) as output:
+    with VideoFileClip(str(tmp_path / "rows.mp4")) as output:
         assert output.size == [160, 440]
 
 
-def test_a_source_with_bars_gets_a_crop_hint_that_removes_them(source_path, tall_source_path):
-    app = open_app(source_path, tall_source_path, source_path, source_path)
-    app.number_input(key="row_3").set_value(2)
-    app.number_input(key="row_4").set_value(2).run()
+def test_an_empty_panel_can_be_added_and_a_source_moved_into_it(source_path, tall_source_path):
+    app = open_app(source_path)
+    assert app.selectbox(key="panel_pick_1").options == ["Panel 1"]
+    app.button(key="add_panel").click().run()
+    # Beside the last Panel, at its Row's height and the same width.
+    assert [app.number_input(key=f"pn_{side}_2").value for side in ("width", "height")] == [160, 120]
+    assert "Output is 320 by 120 pixels" in captions(app)
+    assert "Panel 2 is empty and is black in the Output." in app.info[0].value
 
+    app.selectbox(key="panel_pick_1").set_value(2).run()
     assert not app.exception
-    text = captions(app)
-    assert "It is in Row 1, Column 2, and sets the width of Column 2." in text
+    assert "Panel 1 is empty and is black in the Output." in app.info[0].value
+    assert "Panel 2 is 160 by 120 pixels. Fitted inside it" in captions(app)
+    assert app.button(key="panel_remove_2").disabled and not app.button(key="panel_remove_1").disabled
+
+    # The next Source can go straight into the empty Panel, and no Panel is made for it.
+    app.selectbox(key="add_into").set_value(1)
+    add_source(app, tall_source_path)
+    assert "Output is 320 by 120 pixels" in captions(app)
     assert (
-        "Its Panel, in Row 2, Column 2, is already 60 by 120 pixels. Scaled to fit, it is "
-        "60 by 45 pixels (38% of that size), with Bars of 37.5 pixels above and below. "
-        "Crop Hint: crop 100 pixels of width, to 60 wide, and it fills the Panel." in text
+        "Panel 1 is 160 by 120 pixels. Fitted inside it, the Source is 60 by 120 pixels "
+        "(60% of that size), with Bars of 50 pixels left and right." in captions(app)
     )
-    assert "Output is 220 by 240 pixels, in 2 Rows and 2 Columns" in text
-
-    app.number_input(key="crop_left_4").set_value(50)
-    app.number_input(key="crop_right_4").set_value(50).run()
-    assert "Scaled to fit (100% of that size), it fills the Panel with no Bars." in captions(app)
+    assert not app.info
 
 
-def test_rows_are_saved_and_reopened(source_path, tall_source_path, tmp_path, monkeypatch):
-    project = tmp_path / "grid.json"
+def test_listing_a_panel_later_moves_it_right_in_its_row(source_path, tall_source_path):
+    app = open_app(source_path, tall_source_path)
+    assert "Panel 1 is 160 by 120 pixels" in captions(app)
+    app.button(key="panel_down_1").click().run()
+    assert not app.exception
+    # The first Source's Panel is now second in the list, and so on the right.
+    assert "Panel 2 is 160 by 120 pixels" in captions(app)
+    assert "Panel 1 is 60 by 120 pixels" in captions(app)
+    assert app.button(key="panel_down_1").disabled
+
+
+def test_panels_are_saved_and_reopened(source_path, tall_source_path, tmp_path, monkeypatch):
+    project = tmp_path / "layout.json"
     app = open_app(source_path, tall_source_path)
     save_project_as(app, project, monkeypatch)
-    app.number_input(key="row_2").set_value(2).run()
-    assert [source["row"] for source in saved(project)["sources"]] == [1, 2]
+    app.number_input(key="pn_row_2").set_value(2)
+    app.number_input(key="pn_width_2").set_value(100).run()
+    app.button(key="add_panel").click().run()
+    assert saved(project)["panels"] == [
+        {"row": 1, "width": 160, "height": 120},
+        {"row": 2, "width": 100, "height": 120},
+        {"row": 2, "width": 100, "height": 120},
+    ]
+    assert [source["panel"] for source in saved(project)["sources"]] == [1, 2]
 
     again = AppTest.from_file(APP, default_timeout=60)
     again.run()
     open_project(again, project, monkeypatch)
     assert not again.exception
-    assert again.number_input(key="row_2").value == 2
-    assert "Output is 160 by 440 pixels" in captions(again)
+    assert again.number_input(key="pn_row_2").value == 2
+    assert again.number_input(key="pn_width_3").value == 100
+    assert "Output is 200 by 240 pixels, in 2 Rows" in captions(again)
+    assert "Panel 3 is empty and is black in the Output." in again.info[0].value
 
 
-def test_removing_the_first_source_puts_the_next_one_first_in_row_1(source_path, tall_source_path):
-    app = open_app(source_path, tall_source_path)
-    app.number_input(key="row_2").set_value(2).run()
-    app.button(key="remove_1").click().run()
+def test_a_project_from_before_typed_panels_opens_with_the_same_output(
+    source_path, tall_source_path, tmp_path, monkeypatch
+):
+    project = tmp_path / "old.json"
+    project.write_text(
+        json.dumps(
+            {
+                "format": 2,
+                "sources": [
+                    {"path": source_path, "sync_point": 2.0, "width": 80},
+                    {"path": tall_source_path, "row": 2, "width": 400},
+                ],
+                "audio_source": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = open_app()
+    open_project(app, project, monkeypatch)
     assert not app.exception
-    assert app.number_input(key="row_2").value == 1
-    assert "Output is 100 by 200 pixels and runs" in captions(app)
+    # Under the old rules Source 1 was resized to 80 by 60 and set the sizes;
+    # Source 2, in a Row of its own, was matched to that width: 80 by 160.
+    assert "Output is 80 by 220 pixels, in 2 Rows" in captions(app)
+    assert [app.number_input(key=f"pn_height_{panel}").value for panel in (1, 2)] == [60, 160]
+    assert app.number_input(key="pn_row_2").value == 2
+    # Only the first Source's resize counted then, so the second is fitted.
+    assert app.number_input(key="source_width_1").value == 80
+    assert app.number_input(key="source_width_2").value is None
+    assert "with sound from Panel 1" in captions(app)
+    assert saved(project)["format"] == 3 and len(saved(project)["panels"]) == 2

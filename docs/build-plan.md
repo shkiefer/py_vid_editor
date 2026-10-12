@@ -1,6 +1,6 @@
 # Build plan
 
-The build order, now complete, and the decisions that are not domain language. Domain terms live in `../CONTEXT.md`; hard-to-reverse decisions live in `adr/`.
+The build order and the decisions that are not domain language. Domain terms live in `../CONTEXT.md`; hard-to-reverse decisions live in `adr/`.
 
 ## Slices
 
@@ -15,6 +15,9 @@ Each slice ends with something runnable.
 7. **Speed** (done) — Record Rate, Output Speed, Output Rate, Frame Hint.
 8. **Draft render** (done) — a quick, small render around the Sync Event, written beside the Output.
 9. **Column, then grid** (done) — width matching, Bars, Crop Hint.
+10. **Layout of typed Panels** (built, awaiting verification) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
+11. **Sequences** — several Sources in one Panel, play order, the Anchor, Start Point and End Point, and sound that follows the Source on show.
+12. **Transitions** — a fade from black at the start and to black at the end of a Source, each with its own length. No crossfade.
 
 ## Decisions
 
@@ -29,13 +32,16 @@ Each slice ends with something runnable.
 
 ### Sources
 
-- **Adding and removing Sources**: each Source added goes to the right-hand end of Row 1, and any Source can be removed. Changing a Source's file path keeps its settings, which is how a moved file is located; a different video is added as a new Source.
+- **Adding and removing Sources**: each Source added gets a new Panel at the right-hand end of Row 1, unless an empty Panel is chosen for it beside the Add box. Removing a Source leaves its Panel in place, empty. Removing the last Source clears the layout. Changing a Source's file path keeps its settings, which is how a moved file is located; a different video is added as a new Source.
 - **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation), then resize (a width in pixels; the height follows).
-- **Row height**: the first Source sets the height of Row 1, after its own resize. Every other Source in Row 1 is scaled to that height, so its own resize is switched off. With no Output width the first Source is not scaled at all. Each Source is scaled once, straight to the size of its picture in its Panel. Column and Row edges are rounded one by one, so the Panels add up to an even Output width and height.
-- **Placing a Source**: each Source has a Row number, 1 at the top. Sources that share a Row run left to right in the order added, which also gives each its Column. Only the order of the Row numbers counts, so a Row left empty closes up. Source 1 is always first in Row 1, and when it is removed the next Source takes its place.
-- **Sizes in a grid**: Rows are settled top to bottom. The first Source of a later Row is matched to the width of Column 1. A Source that starts a new Column is matched to its Row height. Every other Source is scaled to fit its Panel and centred, with Bars either side.
-- **Crop Hint feedback**: beside each Source's crop the screen gives its place in the grid, its Panel size, the size it is scaled to, the size of its Bars, and how many pixels of width or height to crop to fill the Panel.
-- **Joining Panels**: each Source's picture is placed on a black frame as a plain array rather than layered as a MoviePy clip. The black is the Bars and any empty place in the grid.
+- **Layout section**: lists the Panels in order, each with its Row, width and height, buttons to list it earlier or later (left or right in its Row) and to remove it when empty, and "Add a Panel", which puts an empty Panel beside the last one at its Row's height and the same width. See `adr/0003`.
+- **A new Panel's size**: its Row's height and the width that fits its Source, rounded to an even number; the first Panel of all takes its Source's own size. After that it changes only when retyped.
+- **Typed sizes and the Output**: with no Output width the Output is exactly the typed Panels, less an odd pixel trimmed from the right or bottom. An Output width scales the whole layout, and the screen then gives each Panel's size in the Output beside its typed one. Edges are rounded one by one, so Panels that touch as typed touch in the Output.
+- **Placing a Source**: each Source's tab has a Panel picker. It offers the Source's own Panel and any empty one. Until slice 11 a Panel holds one Source.
+- **A Source in its Panel**: with its resize left empty it is fitted inside. With a width typed it is that wide, in typed pixels. Either way it is centred, with Bars where it is smaller than the Panel and an even cut where it is larger. A Source sized to within a pixel of its typed Panel takes the whole Panel, so the rounding of an Output width never leaves a hairline Bar.
+- **Scale to Panel buttons**: "Scale width to Panel" and "Scale height to Panel" fill in the Source's resize width once. A later change to the crop or to the Panel leaves that width as typed, so the button is pressed again.
+- **Crop Hint feedback**: beside each Source's resize the screen gives its Panel's size, the size the Source is scaled to, its Bars and what the Panel cuts off. A fitted Source with Bars is told how much to crop to fill the Panel. A Source larger than its Panel is told how many of its own pixels are hidden, so the crop can be typed to choose which part is kept.
+- **Joining Panels**: the part of each Source its Panel shows is placed on a black frame as a plain array rather than layered as a MoviePy clip. The black is the Bars, every empty Panel, and whatever the Panels leave of the Output.
 - **Moved Source**: when a Source file is not found, that Source's settings are kept until the file is located; they are then applied to it and the new location is saved. The other Sources stay usable, but there is no Preview until every Source is found.
 
 ### Sync and timing
@@ -59,12 +65,13 @@ Each slice ends with something runnable.
 - **Preview time**: the Preview shows every Source at its Sync Point by default, with a control to move earlier or later.
 - **Preview size**: the Preview is shrunk to fit 1280 by 800 pixels before it is sent to the browser, and shown no taller than 55% of the window height.
 - **Show one Source**: with several Sources the Preview can show one Source's Panel alone, Bars included, at a larger size.
+- **Empty Panels are named above the Render button**, since one left by mistake shows as black in the Output.
 
 ### Output
 
 - **Export**: MP4 with H.264 only. Three named quality levels. One Output width setting; height follows from the layout; both rounded to even numbers.
 - **Output location**: written to a user-chosen folder, not offered as a browser download.
-- **Audio Source choice**: the first Source with sound, until the user picks another or "No sound". The Project file stores it as a Source number counted from 1.
+- **Audio Panel choice**: the first Panel whose Source has sound, until the user picks another or "No sound". The Project file stores it as a Panel number counted from 1.
 - **Draft**: its main use is checking that the Sync Point renders as meant. It has its own Lead-in and Lead-out (2 s each to start), its own width (640 to start, never wider than the Output) and sound only when its box is ticked. The Output Rate, the speeds and the Overlays are the Output's. It is scaled with a quicker, rougher resize and encoded fast at low quality, and the text Overlay shrinks with the picture.
 - **Draft file**: written to the Output folder under the Output's file name with `_draft` added, and replaced each time without asking. It never replaces a Source file. It is not played in the app; an Open Draft button hands it to the program Windows uses for MP4 files. The Draft settings are saved in the Project file.
 - **Draft feedback**: the screen says how large and how long the Draft will be, where the Sync Event falls in it, whether it has sound and why not, how long it took, and when settings have changed since it was made. Both Draft and full render show progress.
@@ -82,7 +89,20 @@ Each slice ends with something runnable.
 - **Saving**: a Project has no file until Save Project as gives it one. From then on every change is written to that file, including a setting the Preview rejects and changes made while a Source file is missing. The file is replaced in one step, so a failed save never leaves half a file.
 - **Opening**: a setting the file does not mention takes its usual starting value, so older files still open. A value that cannot be used stops the file from opening and names the value.
 - **New Project** clears the screen and lets go of the Project file without changing it.
-- **Format 2** holds several Sources, the Audio Source, each Record Rate, the Output Speed, the Draft settings and each Source's Row. Format 1 files, which held one Source, still open.
+- **Format 3** lists the Panels, says which Panel each Source is in, and names the Audio Panel. It also holds each Record Rate, the Output Speed and the Draft settings.
+- **Older files still open.** Format 1 held one Source; format 2 held several, each with a Row. Each Source of such a file gets a Panel of the size the old rules gave it, worked out once every Source file is open, and only the first Source keeps its typed resize. A Row the old layout left black at its right-hand end gets an empty Panel there. The Output is then the same as before, except that with an Output width a boundary between Panels can move by one pixel. The file is rewritten in format 3 at the first save.
+
+### Agreed for slices 11 and 12, not yet built
+
+The terms are in `../CONTEXT.md`: Sequence, Anchor, Start Point, End Point, Transition.
+
+- **Sequences** (slice 11): a Panel can hold several Sources, shown one after another in a play order kept by the Panel, with buttons to move a Source earlier or later. The Panel picker in a Source's tab then offers every Panel, not only empty ones.
+- **The Anchor** (slice 11): one Source in each Panel carries its Sync Point; the first put there, until a marker in the Panel's list is moved. It can sit anywhere in the play order. Only the Anchor shows a Sync Point and its frame stepper.
+- **Start Point and End Point** (slice 11): every Source has both, as file times, the whole file unless set, with the same frame buttons as the Sync Point. A Source hands over to the next at its End Point. Sources before the Anchor are placed by where they end, and Sources after it by where they start, each hard against its neighbour. One too long for the Output loses its far end.
+- **Sound in a Sequence** (slice 11): the Output takes its sound from whichever Source the Audio Panel is showing, and is silent for a stretch whose Source is not real time or has no sound. The screen says which.
+- **A Sequence never adds a Sync Event** and never changes the Output running time. A stretch no Source fills is still a Gap.
+- **Transitions** (slice 12): each Source can have a fade from black at its start and a fade to black at its end, each with its own length, within its own time on show. No crossfade: two Sources are never on show in one Panel at once, and sound is never mixed.
+- **Start Point, End Point and Transitions** are settings of every Source, so a Panel with one Source can use them too.
 
 ## Known limits
 
@@ -92,8 +112,8 @@ Each slice ends with something runnable.
 - **The Preview at the Sync Event shows exactly the frame a stepped Sync Point names.** The rendered Output takes a frame every 1 / Output Rate seconds from its start, so it shows that same frame at the Sync Event only when the Lead-in is a whole number of Output frames.
 - **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
 - **A Draft of two 1080p Sources takes about 2 to 3 s for each second of a 60 frames per second Output**, against about 11 s at full size. Most of what is left is reading the Source files, so a smaller Draft is hardly quicker: 480 wide saved under 10% against 640.
-- **A grid is large and slow at its natural size.** Two 1080p Sources in two Rows and two Columns gave a 2528 by 4492 Output, and a 2 s Draft of it at 640 wide took about 11 s. An Output width brings the size down.
-- **Sources cannot be reordered.** The order added decides which Source sets sizes and where each sits in its Row. To change it, remove a Source and add it again.
+- **A large layout is slow at its typed size.** Four 1080p-sized Panels in two Rows of two gave a 2528 by 4492 Output under the old rules, and a 2 s Draft of it at 640 wide took about 11 s. An Output width brings the size down.
+- **The first Source still starts the layout.** A Panel cannot be made before any Source has been added.
 - **The app does not reopen the last Project on start.** Open Project is used each time.
 
 ## Open decisions
@@ -105,7 +125,6 @@ Each slice ends with something runnable.
 ## Deferred
 
 - Text label on each Panel.
-- Reordering Sources, and choosing a Source's Column directly.
 - More than one text or image Overlay, timed Overlays, colour choices.
 - Hosting for other users (needs upload handling).
 - Formats other than MP4.

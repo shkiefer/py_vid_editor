@@ -11,7 +11,7 @@ One input video file.
 _Avoid_: Clip, input, video
 
 **Panel**:
-The area of the **Output** occupied by one **Source**.
+An area of the **Output**, set up in the layout, that shows one **Source** or one **Sequence**, or is empty.
 _Avoid_: Cell, tile, pane, window
 
 **Output**:
@@ -22,13 +22,25 @@ _Avoid_: Final video, result, export, composite
 The saved set of **Sources** and settings that produces one **Output**.
 _Avoid_: Session, workspace, job
 
-**Audio Source**:
-The one **Source** whose sound is used in the **Output**.
-_Avoid_: Audio track, sound file, master audio
+**Audio Panel**:
+The one **Panel** whose sound is used in the **Output**, taken from whichever **Source** it is showing.
+_Avoid_: Audio Source, audio track, sound file, master audio
 
 **Draft**:
 A small, low-quality render of a stretch of the **Output** around the **Sync Event**, made only for checking it in motion.
 _Avoid_: Preview video, proxy, test render
+
+**Sequence**:
+The **Sources** that share one **Panel**, shown one after another in a chosen play order.
+_Avoid_: Playlist, track, reel
+
+**Anchor**:
+The one **Source** in a **Panel** that carries the **Panel**'s **Sync Point**.
+_Avoid_: Synced Source, sync source, master, reference
+
+**Transition**:
+A fade between black and a **Source**'s picture at the start or the end of that **Source**'s time on show.
+_Avoid_: Crossfade, dissolve, wipe
 
 **Overlay**:
 Text or an image drawn on top of the **Output** as a whole.
@@ -37,19 +49,15 @@ _Avoid_: Watermark, caption, label
 ### Layout
 
 **Row**:
-A horizontal run of **Panels** that all share one height.
-_Avoid_: Line, strip, side by side group
-
-**Column**:
-A vertical run of **Panels** that all share one width.
-_Avoid_: Stack
+A horizontal run of **Panels**, side by side.
+_Avoid_: Line, strip, side by side group, Column
 
 **Bars**:
-Black areas inside a **Panel** left over when a **Source** is scaled to fit without distortion and its shape does not match the **Panel**.
+Black areas inside a **Panel** beside a **Source** that, after its own crop and resize, is narrower or shorter than the **Panel**.
 _Avoid_: Letterbox, padding, gap
 
 **Crop Hint**:
-The amount of width or height a **Source** would need to lose to fill its **Panel** exactly, with no **Bars**.
+The amount of width or height a **Source** would need to lose to fill its **Panel** exactly: what to crop to be rid of **Bars**, or what the **Panel** is cutting off.
 _Avoid_: Auto crop, fit suggestion
 
 **Preview**:
@@ -96,6 +104,14 @@ _Avoid_: Marker, cue
 The timestamp within one **Source** at which the **Sync Event** is seen.
 _Avoid_: Sync time, sync offset, timestamp
 
+**Start Point**:
+The timestamp within one **Source** before which none of its footage is used; the start of the file unless set.
+_Avoid_: In point, trim start, start time
+
+**End Point**:
+The timestamp within one **Source** after which none of its footage is used; the end of the file unless set.
+_Avoid_: Out point, trim end, end time
+
 **Lead-in**:
 The length of **Output** running time between the start of the **Output** and the **Sync Event**.
 _Avoid_: Start offset, start time, pre-roll
@@ -105,7 +121,7 @@ The length of **Output** running time between the **Sync Event** and the end of 
 _Avoid_: End offset, end time, duration
 
 **Gap**:
-A stretch of the **Output** during which a **Source** has no footage to show, rendered as black in its **Panel**.
+A stretch of the **Output** during which a **Panel** has no footage to show, rendered as black.
 _Avoid_: Padding, filler, freeze
 
 ## Relationships
@@ -118,35 +134,41 @@ _Avoid_: Padding, filler, freeze
 - The **Preview** checks one instant; the **Draft** checks motion, such as a wrong **Sync Point** or drift from a wrong **Record Rate**
 - A **Project** whose **Source** file has moved keeps that **Source**'s settings until the file is located again
 - An **Output** is built from one or more **Sources**; a single **Source** is not a separate mode
-- Each **Source** fills exactly one **Panel**
-- Each **Source** has exactly one **Sync Point**, and its own crop, rotation, resize, and aspect ratio
+- **Panels** are set up first, each in a **Row**; every **Source** is then assigned to exactly one **Panel**
+- A **Panel** has its own width and height, typed in the layout; no **Source** sets the size of a **Panel**
+- Every **Source** has its own resize, and can be scaled in one step so that its width, or its height, equals its **Panel**'s
+- A **Source** is centred in its **Panel**: where it is smaller it gets **Bars**, and where it is larger the overflow is cut off evenly from both sides
+- A **Source** with no resize set is scaled to fit inside its **Panel**
+- A **Panel** with more than one **Source** shows them as a **Sequence**, and holds their play order
+- A **Panel** can be set up with no **Source** in it; an empty **Panel** is black, has no **Anchor**, and cannot be the **Audio Panel**
+- Removing a **Source** leaves its **Panel** in place; a **Panel** can be removed only when it is empty
+- Adding a **Source** makes a new **Panel** for it at the end of the first **Row**, unless it is assigned to an empty one; it can then be moved into another **Panel**
+- A new **Panel** starts at the height of its **Row** and the width that fits its **Source** at that height; the first **Panel** of all starts at its **Source**'s own size
+- Once a **Panel** exists its size changes only when it is retyped, so cropping or rotating a **Source** never resizes a **Panel**
+- Each **Source** has its own crop, rotation, resize, and aspect ratio; only an **Anchor** has a **Sync Point**
+- Every **Panel** that holds a **Source** has exactly one **Anchor**: the first **Source** put in it, until another is chosen; a **Panel**'s only **Source** is its **Anchor**
+- When the **Anchor** leaves a **Panel**, the first remaining **Source** in play order becomes the **Anchor**
+- An **Anchor**'s **Sync Point** lies between its **Start Point** and its **End Point**
 - A **Source** is rotated before it is cropped, so crop amounts and the **Crop Hint** are measured on the picture as it appears after rotation
 - A **Source** is resized after it is cropped, to a chosen width with the height following, so crop amounts never need retyping and the resize never distorts
 - A **Sync Point** is typed in by the user and can then be refined frame by frame; refining overwrites the typed value, and retyping discards the refinement
 - **Sources** are added one at a time, and the **Preview** is refreshed after each is added
-- Each **Source** is given a **Row**; within a **Row**, **Sources** run left to right in the order added, which gives each its **Column**
-- **Sources** placed side by side form a **Row** and are matched in height
-- **Sources** placed top and bottom form a **Column** and are matched in width
-- In a grid, every **Row** is height matched and every **Column** is width matched
-- A **Source** is never distorted to fit its **Panel**; where it cannot match both its **Row** and its **Column**, it gets **Bars**
-- The first **Source** added sets the height of the first **Row**, and is the only **Source** whose resize counts; every other **Source** is scaled to fit
-- In the first **Row**, each **Source** sets the width of its **Column**
-- In any later **Row**, the first **Source** added is matched to the width of the first **Column** and so sets the height of that **Row**
-- A later **Row** may be longer than the first; a **Source** that starts a new **Column** is matched to the height of its **Row** and sets the width of that **Column**
-- A place in the grid with no **Source** is black
+- Each **Panel** is given a **Row**; within a **Row**, **Panels** run left to right in their listed order
+- A **Row** is as tall as its tallest **Panel** and as wide as its **Panels** added together; a shorter **Panel** sits at the top of its **Row** with black below
+- The **Output** is as wide as its widest **Row**; a narrower **Row** is centred with black either side
+- **Panels** in different **Rows** need not line up with one another
+- A **Source** is never distorted to fit its **Panel**
 - **Bars** are split evenly either side of the **Source**
 - The **Crop Hint** is measured in the same pixels as the crop, on the picture after rotation and crop; a **Source** that already fills its **Panel** has none
-- The order in which **Sources** are added therefore decides which ones set sizes and which ones get a **Crop Hint**
-- Changing the crop of a size-setting **Source** recalculates every dependent **Panel** and **Crop Hint**
-- Every other **Source** has a **Panel** of already fixed size and gets a **Crop Hint**: for width when it is too wide after matching the **Row** height, or for height when it is too tall after matching the **Column** width
 - Each **Source** has a **Record Rate** and a **Playback Rate**, which together give its **Source Speed**
 - A **Source** whose **Record Rate** is not given is real time: its **Record Rate** is taken to be its **Playback Rate**
 - Every **Source** is shown at the **Output Speed**, so all **Panels** move through the real event at the same rate
 - The **Output Speed** defaults to the slowest **Source Speed**, at which no frame of any **Source** is dropped
 - The user can override the **Output Speed** once the **Sources** are synced
 - A **Source** slower than the **Output Speed** has frames dropped; a **Source** faster than the **Output Speed** has each frame held longer
-- The **Output** has sound only when the **Audio Source** is real time and the **Output Speed** is real time
-- Each **Source** is placed on **Event Time** using its own **Sync Point** and **Source Speed**; **Sources** are never matched to one another directly
+- The **Output** has sound only when the **Output Speed** is real time, and then only while the **Source** the **Audio Panel** is showing is real time and has sound
+- Each **Anchor** is placed on **Event Time** using its own **Sync Point** and **Source Speed**; **Panels** are never matched to one another directly
+- Every other **Source** in a **Sequence** is placed from its **Anchor** outwards, at its own **Source Speed**
 - The **Output Speed** is chosen as the slowest **Source Speed**, real time, or a custom value
 - The **Output Rate** defaults to the highest **Playback Rate** among the **Sources**
 - Every **Source** gets a **Frame Hint** whenever the **Output Speed** or **Output Rate** changes
@@ -156,12 +178,20 @@ _Avoid_: Padding, filler, freeze
 - **Overlays**, size, frame rate, quality, and file format belong to the **Output**, not to any **Source**
 - The **Output** has at most one text **Overlay** and at most one image **Overlay**; each sits in one corner and lasts the whole running time
 - An **Overlay** is sized against the finished **Output** and stays on through every **Gap**
-- The **Output** has at most one **Audio Source**; sound from every other **Source** is discarded, never mixed
-- Only a **Source** that has sound can be the **Audio Source**; the default is the first such **Source** added, and "none" is allowed
-- The **Audio Source** sound stays locked to its picture, so the **Output** is silent during that **Source**'s **Gaps**
-- A **Source** with less footage before its **Sync Point** than the **Lead-in** has a **Gap** at the front
-- A **Source** with less footage after its **Sync Point** than the **Lead-out** has a **Gap** at the back
+- The **Output** has at most one **Audio Panel**; sound from every other **Panel** is discarded, never mixed
+- Only a **Panel** holding a **Source** that has sound can be the **Audio Panel**; the default is the first such **Panel**, and "none" is allowed
+- Sound stays locked to its picture: in a **Sequence** the sound changes with the **Source** on show, and the **Output** is silent during the **Audio Panel**'s **Gaps**
+- A **Panel** with less footage before its **Sync Point** than the **Lead-in** has a **Gap** at the front
+- A **Panel** with less footage after its **Sync Point** than the **Lead-out** has a **Gap** at the back
 - A **Gap** never shortens the **Output** and never freezes a frame
+- A **Sequence** does not add a **Sync Event**: its **Anchor** carries the **Panel**'s **Sync Point**, and the others play where the **Anchor** has no footage, in place of a **Gap**
+- The **Anchor** can sit anywhere in the play order; a **Source** before it is placed by where it ends, hard against the start of the next, and a **Source** after it by where it starts, hard against the end of the one before
+- A **Source** before the **Anchor** that is too long loses its beginning to the start of the **Output**; a **Source** after it that is too long loses its end
+- Every **Source** has a **Start Point** and an **End Point**, in or out of a **Sequence**; one **Source** hands over to the next in its **Sequence** at its **End Point**, and the next begins from its own **Start Point**
+- **Start Point** and **End Point** are file times, like the **Sync Point**, so on a **Source** that is not real time they are not **Output** running time
+- Each **Source** can have a start **Transition** and an end **Transition**, each with its own length, in or out of a **Sequence**
+- A **Transition** happens within its own **Source**'s time on show; two **Sources** are never on show in one **Panel** at the same moment
+- A **Sequence** never changes the **Output** running time, which stays **Lead-in** plus **Lead-out**
 
 ## Example dialogue
 
@@ -175,12 +205,12 @@ _Avoid_: Padding, filler, freeze
 > **Domain expert:** "No, rotate **Source** A. Rotation and crop belong to each **Source**. The logo and the text line are **Overlays** and go on the **Output** once."
 > **Dev:** "And if I only load one **Source**?"
 > **Domain expert:** "Same workflow. Its **Sync Point** is just the reference time that the **Lead-in** and **Lead-out** trim around."
-> **Dev:** "I add a wide **Source** to the second **Row**, under a narrow **Column**. Do we squeeze it?"
-> **Domain expert:** "Never. It is scaled to fit and gets **Bars**. The **Crop Hint** tells you how much width to crop from that **Source** so the **Bars** go away."
+> **Dev:** "I put a wide **Source** in a narrow **Panel**. Do we squeeze it?"
+> **Domain expert:** "Never. Left alone it is scaled to fit and gets **Bars** above and below. Scale its height to the **Panel** instead and it fills the height, with the overflow cut evenly from the left and right. Either way the **Crop Hint** gives the crop that makes it fill the **Panel** exactly."
 > **Dev:** "**Source** A was recorded at 240 and plays at 60. **Source** B was recorded at 30 and plays at 30. What does the **Output** do?"
 > **Domain expert:** "A has a **Source Speed** of one quarter, B is real time. By default the **Output Speed** is the slowest, one quarter. A plays as it is. B is slowed to match, so it shows 7.5 of its frames each second. It looks choppy, but no frame is dropped."
 > **Dev:** "Can I play that **Output** in real time instead, so B looks normal and keeps its sound?"
-> **Domain expert:** "Yes. Override the **Output Speed** to 1. A is now sped up to real time, so most of its frames are dropped. B is the **Audio Source**, it is real time, and the **Output Speed** is real time, so the sound is kept."
+> **Domain expert:** "Yes. Override the **Output Speed** to 1. A is now sped up to real time, so most of its frames are dropped. B's **Panel** is the **Audio Panel**, B is real time, and the **Output Speed** is real time, so the sound is kept."
 > **Dev:** "Is a **Gap** just **Bars** that cover the whole **Panel**?"
 > **Domain expert:** "No. A **Gap** is about time: the **Source** has no footage at that moment. **Bars** are about shape: the **Source** has footage but does not fill the **Panel**."
 

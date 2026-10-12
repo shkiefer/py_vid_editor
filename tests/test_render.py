@@ -4,7 +4,7 @@ import gc
 from dataclasses import replace
 
 import pytest
-from conftest import file_time_shown, is_black
+from conftest import SOURCE_SIZE, TALL_SIZE, file_time_shown, is_black
 from moviepy import VideoFileClip
 from PIL import Image
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
@@ -15,6 +15,7 @@ from vid_editor.model import (
     DraftSettings,
     ImageOverlay,
     OutputSettings,
+    Panel,
     Project,
     Quality,
     Source,
@@ -26,6 +27,7 @@ from vid_editor.render import (
     draft_project,
     edited_size,
     geometry,
+    legacy_panels,
     fit_within,
     open_source,
     preview,
@@ -34,17 +36,32 @@ from vid_editor.render import (
     silence_reason,
     source_frame,
     source_info,
+    source_sizes,
     span_of,
+    starting_panel,
     speeds,
 )
 
 FRAME = 0.1  # one frame of the 10 frames per second test Source
 
 
+def edited(size: tuple[int, int], source: Source) -> tuple[int, int]:
+    """A Source's size after its rotation, crop and resize, or as filmed if those cannot be applied."""
+    try:
+        return source_sizes(size, source)[1]
+    except EditError:
+        return size
+
+
 def project_for(source: Source, **output) -> Project:
+    """One 160 by 120 Source in a Panel of exactly its edited size."""
     output.setdefault("lead_in", 1.0)
     output.setdefault("lead_out", 1.0)
-    return Project(sources=(source,), output=OutputSettings(**output))
+    return Project(
+        sources=(source,),
+        output=OutputSettings(**output),
+        panels=(Panel(*edited(SOURCE_SIZE, source)),),
+    )
 
 
 def test_source_info_reads_the_file(source_clip):
@@ -283,17 +300,24 @@ def test_render_refuses_a_file_name_that_is_not_mp4(source_path, source_clip, tm
 # ------------------------------------------------------------ Several Sources
 
 
-def pair(source_path, tall_source_path, first=None, second=None, audio_source=0, **output) -> Project:
-    """The 160 by 120 Source with sound on the left, the 100 by 200 silent one on the right."""
+def pair(source_path, tall_source_path, first=None, second=None, audio_panel=0, **output) -> Project:
+    """The 160 by 120 Source with sound on the left, the 100 by 200 silent one on the right.
+
+    Each is in a Panel of its own in Row 1. The first Panel is the first
+    Source's edited size; the second has that height and fits its Source.
+    """
     output.setdefault("lead_in", 1.0)
     output.setdefault("lead_out", 1.0)
+    left = Source(source_path, **(first or {"sync_point": 2.0}))
+    right = Source(tall_source_path, **(second or {"sync_point": 1.0}), panel=1)
+    first_panel = Panel(*edited(SOURCE_SIZE, left))
+    fitted = edited(TALL_SIZE, replace(right, width=None))
+    second_panel = Panel(max(2, round(fitted[0] * first_panel.height / fitted[1])), first_panel.height)
     return Project(
-        sources=(
-            Source(source_path, **(first or {"sync_point": 2.0})),
-            Source(tall_source_path, **(second or {"sync_point": 1.0})),
-        ),
+        sources=(left, right),
         output=OutputSettings(**output),
-        audio_source=audio_source,
+        panels=(first_panel, second_panel),
+        audio_panel=audio_panel,
     )
 
 
@@ -310,7 +334,7 @@ def test_sources_sit_side_by_side_matched_to_the_first_height(
 
     sizes = geometry(project, clips)
     assert sizes.cropped == ((160, 120), (100, 200))
-    assert sizes.layout.panel_widths == (160, 60)
+    assert tuple(box.width for box in sizes.layout.boxes) == (160, 60)
     assert (sizes.layout.width, sizes.layout.height) == (220, 120)
 
 
@@ -337,20 +361,30 @@ def test_a_gap_blacks_out_one_panel_and_leaves_the_other_playing(
     assert build_output(project, clips).duration == pytest.approx(4.0)
 
 
-def test_only_the_first_source_can_be_resized(
+def test_every_source_has_its_own_resize_and_none_of_them_moves_the_layout(
     source_path, tall_source_path, source_clip, tall_source_clip
 ):
-    project = pair(
-        source_path,
-        tall_source_path,
-        first={"width": 80},
-        second={"width": 400, "crop": Crop(top=100)},
+    project = pair(source_path, tall_source_path)
+    clips = [source_clip, tall_source_clip]
+    resized = replace(
+        project,
+        sources=(
+            replace(project.sources[0], width=80),
+            replace(project.sources[1], width=30, crop=Crop(top=100)),
+        ),
     )
-    sizes = geometry(project, [source_clip, tall_source_clip])
-    assert sizes.resized == (80, 60)
-    assert sizes.cropped[1] == (100, 100)
-    assert sizes.layout.panel_widths == (80, 60)
-    assert tuple(build_output(project, [source_clip, tall_source_clip]).size) == (140, 60)
+    sizes = geometry(resized, clips)
+    assert sizes.layout == geometry(project, clips).layout
+    assert sizes.cropped == ((160, 120), (100, 100))
+    # Each is centred in its Panel at its typed width, with Bars all round.
+    first, second = sizes.pictures
+    assert (first.width, first.height, first.bars) == (80, 60, (80, 60))
+    assert (second.width, second.height, second.bars) == (30, 30, (30, 90))
+    frame = preview(resized, clips, output_time=1.0)
+    assert frame.shape[:2] == (120, 220)
+    assert is_black(frame[:28]) and is_black(frame[:, :38])
+    assert frame[60, 80, 0] > 100  # the first Source, in the middle of its Panel
+    assert frame[60, 190, 2] > 200  # the blue Source, in the middle of its Panel
 
 
 def test_output_width_scales_every_panel(
@@ -374,14 +408,14 @@ def test_the_audio_source_alone_gives_the_output_its_sound(
     source_path, tall_source_path, source_clip, tall_source_clip
 ):
     clips = [source_clip, tall_source_clip]
-    assert build_output(pair(source_path, tall_source_path, audio_source=0), clips).audio is not None
+    assert build_output(pair(source_path, tall_source_path, audio_panel=0), clips).audio is not None
     # The second Source has no sound, and "none" is allowed.
-    assert build_output(pair(source_path, tall_source_path, audio_source=1), clips).audio is None
-    assert build_output(pair(source_path, tall_source_path, audio_source=None), clips).audio is None
-    with pytest.raises(EditError, match="Audio Source"):
-        build_output(pair(source_path, tall_source_path, audio_source=2), clips)
+    assert build_output(pair(source_path, tall_source_path, audio_panel=1), clips).audio is None
+    assert build_output(pair(source_path, tall_source_path, audio_panel=None), clips).audio is None
+    with pytest.raises(EditError, match="Audio Panel"):
+        build_output(pair(source_path, tall_source_path, audio_panel=2), clips)
     assert build_output(project_for(Source(source_path)), [source_clip]).audio is not None
-    silent = Project((Source(source_path),), OutputSettings(1.0, 1.0), audio_source=None)
+    silent = replace(project_for(Source(source_path)), audio_panel=None)
     assert build_output(silent, [source_clip]).audio is None
 
 
@@ -419,7 +453,7 @@ def test_render_writes_a_row_with_overlays_and_the_audio_source_sound(
         assert file_time_shown(middle[:, :160]) == pytest.approx(2.0, abs=3 * FRAME)
 
     silent = render(
-        pair(source_path, tall_source_path, audio_source=None),
+        pair(source_path, tall_source_path, audio_panel=None),
         [source_clip, tall_source_clip],
         tmp_path / "silent.mp4",
     )
@@ -553,8 +587,8 @@ def test_sound_is_kept_only_when_the_audio_source_and_the_output_are_real_time(
     assert "Source 1 is not real time" in silence_reason(slow_audio, clips)
     assert build_output(slow_audio, clips).audio is None
 
-    assert "has no sound" in silence_reason(pair(source_path, tall_source_path, audio_source=1), clips)
-    assert "no Audio Source" in silence_reason(pair(source_path, tall_source_path, audio_source=None), clips)
+    assert "has no sound" in silence_reason(pair(source_path, tall_source_path, audio_panel=1), clips)
+    assert "no Audio Panel" in silence_reason(pair(source_path, tall_source_path, audio_panel=None), clips)
 
 
 def test_render_changes_speed_and_keeps_the_running_time(
@@ -604,7 +638,7 @@ def test_a_draft_is_a_smaller_output_with_its_own_lead_in_and_lead_out(
         assert result.w == 110
         assert result.h == pytest.approx(full.height * 110 / full.width, abs=2)
         assert result.audio is None
-        left_width = round(full.panel_widths[0] * 110 / full.width)
+        left_width = round(full.boxes[0].width * 110 / full.width)
         frame = result.get_frame(2.0)
         assert file_time_shown(frame[:, : left_width - 4]) == pytest.approx(2.0, abs=3 * FRAME)
         assert is_black(result.get_frame(0.5)[:, left_width + 4 :])  # the tall Source's front Gap
@@ -614,7 +648,7 @@ def test_a_draft_has_sound_only_when_asked(source_path, source_clip, tmp_path):
     project = project_for(Source(source_path, sync_point=2.0))
     quiet = draft_project(project, [source_clip], DraftSettings())
     loud = draft_project(project, [source_clip], DraftSettings(sound=True))
-    assert quiet.audio_source is None and loud.audio_source == 0
+    assert quiet.audio_panel is None and loud.audio_panel == 0
 
     written = render_draft(
         project, [source_clip], tmp_path / "draft.mp4", DraftSettings(1.0, 1.0, sound=True)
@@ -657,14 +691,16 @@ def test_frames_kept_for_stepping_are_dropped_when_their_file_is_closed(source_p
     assert not any(key[0] == reader for key in render_module._recent_frames)
 
 
-# ----------------------------------------------------------- Column and grid
+# --------------------------------------------------------------- Typed Panels
 
 
-def test_sources_sit_top_and_bottom_matched_to_the_first_width(
+def test_panels_in_two_rows_show_each_source_where_its_panel_sits(
     source_path, tall_source_path, source_clip, tall_source_clip
 ):
-    # The 100 by 200 Source is scaled to 160 wide, which makes it 320 high.
-    project = pair(source_path, tall_source_path, second={"sync_point": 1.0, "row": 2})
+    # The 100 by 200 Source fills a 160 by 320 Panel under the first.
+    project = replace(
+        pair(source_path, tall_source_path), panels=(Panel(160, 120), Panel(160, 320, row=2))
+    )
     clips = [source_clip, tall_source_clip]
     layout = geometry(project, clips).layout
     assert (layout.width, layout.height) == (160, 440)
@@ -677,42 +713,93 @@ def test_sources_sit_top_and_bottom_matched_to_the_first_width(
     assert frame[200:300, 40:120, 2].min() > 200  # the blue Source fills the width
 
 
-def test_a_source_that_cannot_match_its_row_and_column_gets_bars(
-    source_path, tall_source_path, source_clip, tall_source_clip, tmp_path
+def test_a_fitted_source_narrower_in_shape_than_its_panel_gets_bars(
+    source_path, source_clip, tmp_path
 ):
-    # Row 1: wide, tall. Row 2: wide, wide. The last Panel is 60 by 120 and
-    # holds the wide Source at 60 by 45, with Bars above and below.
-    wide, tall = Source(source_path, sync_point=2.0), Source(tall_source_path, sync_point=1.0)
-    project = Project(
-        sources=(wide, tall, replace(wide, row=2), replace(wide, row=2)),
-        output=OutputSettings(lead_in=1.0, lead_out=1.0),
-    )
-    clips = [source_clip, tall_source_clip, source_clip, source_clip]
-    layout = geometry(project, clips).layout
-    assert (layout.width, layout.height) == (220, 240)
-    last = layout.panels[3]
-    assert (last.picture_width, last.picture_height) == (60, 45)
-    assert last.crop_hint.width == 100
+    # A 60 by 120 Panel holds the 160 by 120 Source at 60 by 45, with Bars above and below.
+    project = replace(project_for(Source(source_path, sync_point=2.0)), panels=(Panel(60, 120),))
+    sizes = geometry(project, [source_clip])
+    picture = sizes.pictures[0]
+    assert (picture.width, picture.height, picture.bars) == (60, 45, (0, 75))
+    assert picture.crop_hint.width == 100
 
-    frame = preview(project, clips, output_time=1.0)
-    assert is_black(frame[120 : last.picture_top - 1, 160:])  # the Bar above
-    assert is_black(frame[last.picture_top + 46 :, 160:])  # the Bar below
-    picture = frame[last.picture_top + 2 : last.picture_top + 43, 162:218]
-    assert file_time_shown(picture) == pytest.approx(2.0, abs=FRAME)
+    frame = preview(project, [source_clip], output_time=1.0)
+    assert frame.shape[:2] == (120, 60)
+    assert is_black(frame[: picture.top - 1]) and is_black(frame[picture.top + 46 :])
+    assert file_time_shown(frame[picture.top + 2 : picture.top + 43]) == pytest.approx(2.0, abs=FRAME)
 
-    written = render(project, clips, tmp_path / "grid.mp4")
+    written = render(project, [source_clip], tmp_path / "bars.mp4")
     with VideoFileClip(str(written)) as result:
-        assert result.size == [220, 240]
+        assert result.size == [60, 120]
         rendered = result.get_frame(1.0)
-        assert is_black(rendered[124 : last.picture_top - 4, 164:216])
-        assert file_time_shown(rendered[last.picture_top + 4 : last.picture_top + 41, 164:216]) == (
+        assert is_black(rendered[4 : picture.top - 4, 4:56])
+        assert file_time_shown(rendered[picture.top + 4 : picture.top + 41, 4:56]) == (
             pytest.approx(2.0, abs=3 * FRAME)
         )
 
 
-def test_the_first_source_must_be_in_the_first_row(
+def test_a_source_larger_than_its_panel_is_cut_off_evenly(source_path, source_clip):
+    # At its own 160 width in an 80 wide Panel, the middle 80 columns show.
+    project = replace(project_for(Source(source_path, width=160)), panels=(Panel(80, 120),))
+    picture = geometry(project, [source_clip]).pictures[0]
+    assert picture.cut == (80, 0) and picture.bars == (0, 0)
+    assert picture.crop_hint.width == 80
+
+    for frame in (
+        preview(project, [source_clip], output_time=1.0),
+        build_output(project, [source_clip]).get_frame(1.0),
+    ):
+        assert frame.shape[:2] == (120, 80)
+        # The green quadrant ends half way across the Source, so half way across what is left.
+        assert frame[30, 20, 1] > 200 and frame[30, 60, 1] < 60
+
+
+def test_an_empty_panel_is_black(source_path, source_clip):
+    project = replace(project_for(Source(source_path)), panels=(Panel(160, 120), Panel(60, 120)))
+    frame = preview(project, [source_clip], output_time=1.0)
+    assert frame.shape[:2] == (120, 220)
+    assert is_black(frame[:, 160:]) and not is_black(frame[:, :160])
+    assert tuple(build_output(project, [source_clip]).size) == (220, 120)
+    # An empty Panel has no sound to give.
+    assert "Panel 2 is empty" in silence_reason(replace(project, audio_panel=1), [source_clip])
+
+
+def test_a_source_needs_a_panel_of_its_own(source_path, tall_source_path, source_clip, tall_source_clip):
+    project = pair(source_path, tall_source_path)
+    clips = [source_clip, tall_source_clip]
+    shared = replace(project, sources=(project.sources[0], replace(project.sources[1], panel=0)))
+    with pytest.raises(EditError, match="Panel 1 holds more than one Source"):
+        geometry(shared, clips)
+    adrift = replace(project, sources=(project.sources[0], replace(project.sources[1], panel=5)))
+    with pytest.raises(EditError, match="Source 2 is not assigned to a Panel"):
+        geometry(adrift, clips)
+    with pytest.raises(EditError, match="at least 2 pixels"):
+        geometry(replace(project, panels=(Panel(160, 120), Panel(1, 120))), clips)
+
+
+def test_a_new_panel_starts_at_its_row_height_and_fits_its_source():
+    assert starting_panel(SOURCE_SIZE) == Panel(160, 120)
+    assert starting_panel(TALL_SIZE, row_height=120) == Panel(60, 120)
+    assert starting_panel(TALL_SIZE, row_height=120, row=2) == Panel(60, 120, row=2)
+
+
+def test_an_older_project_gets_panels_of_the_sizes_the_old_rules_gave(
     source_path, tall_source_path, source_clip, tall_source_clip
 ):
-    project = pair(source_path, tall_source_path, first={"row": 2}, second={"row": 1})
-    with pytest.raises(EditError, match="first Row"):
-        geometry(project, [source_clip, tall_source_clip])
+    clips = [source_clip, tall_source_clip]
+    sources = [Source(source_path), Source(tall_source_path)]
+    assert legacy_panels(sources, clips, [1, 1]) == (Panel(160, 120), Panel(60, 120))
+    # In a Row of its own the second Source was matched to the first one's width.
+    assert legacy_panels(sources, clips, [1, 2]) == (Panel(160, 120), Panel(160, 320, row=2))
+    # Only the first Source's resize counted.
+    resized = [Source(source_path, width=80), Source(tall_source_path, width=400)]
+    assert legacy_panels(resized, clips, [1, 1]) == (Panel(80, 60), Panel(30, 60))
+    # A Row shorter than another was black at its right-hand end. An empty
+    # Panel keeps that place, where the Row would now be centred.
+    longer_below = legacy_panels([*sources, sources[1]], [*clips, tall_source_clip], [1, 2, 2])
+    assert longer_below == (
+        Panel(160, 120),
+        Panel(160, 320, row=2),
+        Panel(160, 320, row=2),
+        Panel(160, 120, row=1),
+    )

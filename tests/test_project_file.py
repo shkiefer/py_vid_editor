@@ -18,7 +18,7 @@ SOURCE = {
     "crop_right": 0,
     "source_width": None,
     "record_rate": 240.0,
-    "row": 2,
+    "panel": 0,
     "aspect_on": False,
     "aspect_width": 1920,
     "aspect_height": 1080,
@@ -47,15 +47,21 @@ SHARED = {
     "draft_width": 480,
     "draft_sound": True,
 }
+PANELS = [
+    {"row": 1, "width": 1920, "height": 1080},
+    {"row": 1, "width": 608, "height": 1080},
+    {"row": 2, "width": 2528, "height": 360},
+]
 SETTINGS = ProjectSettings(
-    sources=[SOURCE, SOURCE | {"path": r"C:\videos\camera_b.mp4", "sync_point": 0.75}],
+    sources=[SOURCE, SOURCE | {"path": r"C:\videos\camera_b.mp4", "sync_point": 0.75, "panel": 2}],
     shared=SHARED,
-    audio_source=1,
+    panels=PANELS,
+    audio_panel=1,
 )
 
 
 def test_the_settings_fixture_covers_every_saved_setting():
-    assert set(SOURCE) == {"path", *project_file.SOURCE_KEYS}
+    assert set(SOURCE) == {"path", "panel", *project_file.SOURCE_KEYS}
     assert set(SHARED) == set(project_file.SHARED_KEYS)
 
 
@@ -68,11 +74,13 @@ def test_settings_survive_being_saved_and_opened(tmp_path):
 
 def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     document = json.loads(project_file.dumps(SETTINGS))
-    assert document["format"] == 2
+    assert document["format"] == 3
     assert [source["sync_point"] for source in document["sources"]] == [2.5, 0.75]
     assert document["sources"][0]["crop"] == {"top": 10, "bottom": 0, "left": 20, "right": 0}
-    # The Audio Source is counted from 1, as Sources are on the screen.
-    assert document["audio_source"] == 2
+    assert document["panels"][2] == {"row": 2, "width": 2528, "height": 360}
+    assert [source["panel"] for source in document["sources"]] == [1, 3]
+    # Panels are counted from 1, as they are on the screen.
+    assert document["audio_panel"] == 2
     assert document["output"]["quality"] == "High"
     assert document["output"]["speed"] == "Custom" and document["output"]["custom_speed"] == 0.5
     assert document["sources"][0]["record_rate"] == 240.0
@@ -83,20 +91,20 @@ def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     assert "Proprietary – Do Not Distribute" in project_file.dumps(SETTINGS)
 
 
-def test_no_audio_source_survives_being_saved_and_opened():
-    silent = ProjectSettings(sources=[SOURCE], shared=SHARED, audio_source=None)
-    assert project_file.loads(project_file.dumps(silent)).audio_source is None
+def test_no_audio_panel_survives_being_saved_and_opened():
+    silent = ProjectSettings(sources=[SOURCE], shared=SHARED, panels=PANELS, audio_panel=None)
+    assert project_file.loads(project_file.dumps(silent)).audio_panel is None
 
 
 def test_a_file_from_before_a_setting_existed_still_opens():
     document = json.loads(project_file.dumps(SETTINGS))
     document.pop("image_overlay")
     document["sources"][0].pop("width")
-    document.pop("audio_source")
+    document.pop("audio_panel")
     settings = project_file.loads(json.dumps(document))
     assert "image_path" not in settings.shared and "source_width" not in settings.sources[0]
     assert settings.sources[0]["sync_point"] == 2.5
-    assert settings.audio_source == 0
+    assert settings.audio_panel == 0
 
 
 def test_a_setting_that_is_not_given_is_left_out_of_the_file():
@@ -106,9 +114,41 @@ def test_a_setting_that_is_not_given_is_left_out_of_the_file():
     assert document["output"] == {"lead_in": 1.0}
 
 
+def test_a_file_from_before_typed_panels_gives_each_source_its_row_and_no_panels():
+    old = {
+        "format": 2,
+        "sources": [{"path": "a.mp4"}, {"path": "b.mp4", "row": 2}],
+        "audio_source": 2,
+    }
+    settings = project_file.loads(json.dumps(old))
+    assert settings.panels is None
+    assert [source["row"] for source in settings.sources] == [1, 2]
+    assert all("panel" not in source for source in settings.sources)
+    # Each Source gets a Panel of its own in the same order, so the number carries over.
+    assert settings.audio_panel == 1
+
+
+ONE_PANEL = '"panels": [{"row": 1, "width": 100, "height": 50}]'
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
+        ('{"format": 3, "sources": [{"path": "a.mp4", "panel": 1}]}', "at least one Panel"),
+        (
+            '{"format": 3, "panels": [{"row": 1, "width": 100}], "sources": [{"path": "a.mp4", "panel": 1}]}',
+            "does not give Panel 1 a height",
+        ),
+        (
+            '{"format": 3, "panels": [{"row": 1, "width": 1, "height": 50}], "sources": [{"path": "a.mp4", "panel": 1}]}',
+            "panel 1 width",
+        ),
+        ('{"format": 3, %s, "sources": [{"path": "a.mp4"}]}' % ONE_PANEL, "which Panel Source 1 is in"),
+        ('{"format": 3, %s, "sources": [{"path": "a.mp4", "panel": 2}]}' % ONE_PANEL, "source 1 panel"),
+        (
+            '{"format": 3, %s, "sources": [{"path": "a.mp4", "panel": 1}], "audio_panel": 2}' % ONE_PANEL,
+            "audio panel",
+        ),
         ("not json", "is not a Project file"),
         ("[1, 2]", "is not a Project file"),
         ('{"sources": []}', "is not a Project file"),

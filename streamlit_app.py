@@ -14,6 +14,7 @@ from vid_editor.model import (
     DraftSettings,
     ImageOverlay,
     OutputSettings,
+    Panel,
     Project,
     Quality,
     Source,
@@ -28,6 +29,7 @@ from vid_editor.render import (
     fit_within,
     frame_hints,
     geometry,
+    legacy_panels,
     open_source,
     output_rate,
     preview,
@@ -35,9 +37,12 @@ from vid_editor.render import (
     render_draft,
     silence_reason,
     source_info,
+    source_sizes,
     span_of,
     speeds,
+    starting_panel,
 )
+from vid_editor.layout import width_for_height
 
 st.set_page_config(page_title="Video editor", page_icon=":material/movie_edit:", layout="wide")
 
@@ -49,9 +54,11 @@ st.html(
     "{max-height: 55vh; object-fit: contain; object-position: left top;}</style>"
 )
 
-# Each Source on the screen has a number of its own, counted from 1, that its
-# settings are kept under. This stands for "no Audio Source" in the same list.
+# Each Source and each Panel on the screen has a number of its own, counted
+# from 1, that its settings are kept under. These stand for "no Audio Panel"
+# and "a new Panel" in lists of Panels.
 NO_SOUND = 0
+NEW_PANEL = 0
 
 OVERLAY_DEFAULTS = {
     "text_on": False,
@@ -82,8 +89,76 @@ def clean(path: str) -> str:
     return path.strip().strip('"')
 
 
-def add_source(path: str, kept: dict | None = None) -> None:
-    """Put a Source at the right-hand end of the Row.
+PANEL_KEYS = ("pn_row", "pn_width", "pn_height")
+
+
+def add_panel(row: int = 1, width: int | None = None, height: int | None = None) -> int:
+    """Put a Panel at the end of the list, which is the right-hand end of its Row.
+
+    A Panel made for a new Source has no size until that Source's file has
+    been opened and its size is known.
+    """
+    state = st.session_state
+    panel_id = state.get("next_panel_id", 1)
+    state.next_panel_id = panel_id + 1
+    state.panel_ids = [*state.get("panel_ids", []), panel_id]
+    state[f"pn_row_{panel_id}"] = row
+    state[f"pn_width_{panel_id}"] = width
+    state[f"pn_height_{panel_id}"] = height
+    return panel_id
+
+
+def add_empty_panel() -> None:
+    """Add a Panel beside the last one: its Row's height, and the same width."""
+    state = st.session_state
+    sized = [panel_id for panel_id in state.panel_ids if state[f"pn_width_{panel_id}"]]
+    if not sized:
+        return
+    last = sized[-1]
+    row = state[f"pn_row_{last}"]
+    row_height = max(
+        state[f"pn_height_{panel_id}"] for panel_id in sized if state[f"pn_row_{panel_id}"] == row
+    )
+    add_panel(row, state[f"pn_width_{last}"], row_height)
+
+
+def remove_panel(panel_id: int) -> None:
+    state = st.session_state
+    state.panel_ids = [other for other in state.panel_ids if other != panel_id]
+    for key in PANEL_KEYS:
+        state.pop(f"{key}_{panel_id}", None)
+
+
+def move_panel(panel_id: int, step: int) -> None:
+    """List a Panel earlier or later, which moves it left or right in its Row."""
+    panel_ids = list(st.session_state.panel_ids)
+    position = panel_ids.index(panel_id)
+    target = min(max(position + step, 0), len(panel_ids) - 1)
+    panel_ids.insert(target, panel_ids.pop(position))
+    st.session_state.panel_ids = panel_ids
+
+
+def panel_of(source_id: int) -> int:
+    return st.session_state[f"in_panel_{source_id}"]
+
+
+def empty_panels() -> list[int]:
+    state = st.session_state
+    held = {panel_of(source_id) for source_id in state.get("source_ids", [])}
+    return [panel_id for panel_id in state.get("panel_ids", []) if panel_id not in held]
+
+
+def assign_panel(source_id: int) -> None:
+    """Move a Source into the Panel picked in its tab. The Panel it leaves stays, empty."""
+    st.session_state[f"in_panel_{source_id}"] = st.session_state[f"panel_pick_{source_id}"]
+
+
+def set_resize(source_id: int, width: int) -> None:
+    st.session_state[f"source_width_{source_id}"] = width
+
+
+def add_source(path: str, kept: dict | None = None, panel_id: int | None = None) -> int:
+    """Add a Source, in a new Panel at the right-hand end of Row 1 unless one is given.
 
     `kept` holds settings from a Project file. They wait there until the
     Source's file is opened, which may be after it has been located.
@@ -94,18 +169,25 @@ def add_source(path: str, kept: dict | None = None) -> None:
     state.source_ids = [*state.get("source_ids", []), source_id]
     state[f"path_{source_id}"] = path
     state[f"kept_{source_id}"] = kept or {}
+    state[f"in_panel_{source_id}"] = add_panel() if panel_id is None else panel_id
+    return source_id
 
 
 def remove_source(source_id: int) -> None:
+    """Take a Source away. Its Panel stays where it is, empty."""
     state = st.session_state
     state.source_ids = [other for other in state.source_ids if other != source_id]
-    state.pop(f"path_{source_id}", None)
-    state.pop(f"kept_{source_id}", None)
+    for key in ("path", "kept", "in_panel"):
+        state.pop(f"{key}_{source_id}", None)
     if not state.source_ids:
-        # The next Source added is the first of a new Row, and sets the Output up afresh.
+        # With the last Source gone the layout goes too, and the next Source
+        # added sets the Output up afresh.
+        for panel_id in list(state.get("panel_ids", [])):
+            remove_panel(panel_id)
         for key in ("lead_in", "lead_out", "out_width", "out_rate", "out_folder", "out_name"):
             state.pop(key, None)
         state.audio_chosen = False
+        state.legacy_rows = None
 
 
 def new_project() -> None:
@@ -189,11 +271,27 @@ def open_project() -> None:
         return
     state = st.session_state
     new_project()
-    for source in settings.sources:
-        add_source(source["path"], {key: value for key, value in source.items() if key != "path"})
+    if settings.panels is None:
+        # From before typed Panels. Each Source gets a Panel of its own, sized
+        # by the old rules once every file is open. Under those rules only the
+        # first Source's resize counted.
+        legacy_rows = {}
+        for position, source in enumerate(settings.sources):
+            kept = {key: source[key] for key in project_file.SOURCE_KEYS if key in source}
+            if position:
+                kept["source_width"] = None
+            legacy_rows[add_source(source["path"], kept)] = source["row"]
+        state.legacy_rows = legacy_rows
+    else:
+        panel_ids = [
+            add_panel(panel["row"], panel["width"], panel["height"]) for panel in settings.panels
+        ]
+        for source in settings.sources:
+            kept = {key: source[key] for key in project_file.SOURCE_KEYS if key in source}
+            add_source(source["path"], kept, panel_ids[source["panel"]])
     state.update(settings.shared)
     state.audio_pick = (
-        NO_SOUND if settings.audio_source is None else state.source_ids[settings.audio_source]
+        NO_SOUND if settings.audio_panel is None else state.panel_ids[settings.audio_panel]
     )
     state.audio_chosen = True
     state.project_path = chosen
@@ -222,6 +320,7 @@ def show_project_status(slot) -> None:
 
 state = st.session_state
 state.setdefault("source_ids", [])
+state.setdefault("panel_ids", [])
 
 # A path typed or browsed for is added as a Source here, before the box that
 # holds it is drawn, so that the box can be emptied again.
@@ -233,7 +332,9 @@ if new_path:
     except EditError as error:
         state.add_error = str(error)
     else:
-        add_source(new_path)
+        into = state.get("add_into", NEW_PANEL)
+        add_source(new_path, panel_id=into if into in empty_panels() else None)
+        state.add_into = NEW_PANEL
 
 st.title("Video editor")
 
@@ -262,10 +363,24 @@ with st.container(horizontal=True, vertical_alignment="bottom"):
         key="add_path",
         placeholder=r"C:\videos\camera_a.mp4",
         help="Type or paste the path of a video file on this computer and press Enter, "
-        "or use Browse. Each Source added goes to the right-hand end of Row 1. "
-        "Its Row can then be changed in its tab.",
+        "or use Browse. Each Source added gets a new Panel at the right-hand end of "
+        "Row 1, unless an empty Panel is chosen for it.",
     )
     st.button("Browse", icon=":material/folder_open:", on_click=browse_to_add, key="browse_source")
+    if empty_panels():
+        listed = state.panel_ids
+        if state.get("add_into") not in (NEW_PANEL, *empty_panels()):
+            state.add_into = NEW_PANEL
+        st.selectbox(
+            "Into",
+            [NEW_PANEL, *empty_panels()],
+            key="add_into",
+            format_func=lambda choice: (
+                "A new Panel" if choice == NEW_PANEL else f"Panel {listed.index(choice) + 1} (empty)"
+            ),
+            width=220,
+            help="Which Panel the next Source added goes into.",
+        )
 if add_error := state.pop("add_error", None):
     st.error(add_error, icon=":material/error:")
 
@@ -297,7 +412,6 @@ for source_id in source_ids:
         "crop_right": 0,
         "source_width": None,
         "record_rate": None,
-        "row": 1,
         "aspect_on": False,
         "aspect_width": info.width,
         "aspect_height": info.height,
@@ -308,11 +422,91 @@ for source_id in source_ids:
     sync_key = f"sync_point_{source_id}"
     state[sync_key] = min(state[sync_key], info.duration)
 
+def as_source(source_id: int, values: dict, panel: int = 0) -> Source:
+    """A Source as the model has it, from its settings on the screen."""
+    return Source(
+        path=paths[source_id],
+        sync_point=values["sync_point"],
+        rotation=values["rotation"],
+        crop=Crop(
+            values["crop_top"], values["crop_bottom"], values["crop_left"], values["crop_right"]
+        ),
+        aspect_override=(
+            (values["aspect_width"], values["aspect_height"]) if values["aspect_on"] else None
+        ),
+        width=values["source_width"],
+        record_rate=values["record_rate"],
+        panel=panel,
+    )
+
+
+def on_screen(source_id: int) -> dict:
+    return {name: state[f"{name}_{source_id}"] for name in project_file.SOURCE_KEYS}
+
+
+def cropped_size(source_id: int) -> tuple[int, int] | None:
+    """A Source's size after its rotation and crop, or None while those cannot be applied."""
+    info = infos[source_id]
+    try:
+        return source_sizes((info.width, info.height), as_source(source_id, on_screen(source_id)))[0]
+    except EditError:
+        return None
+
+
+# ------------------------------------------------------------- Size the Panels
+panel_ids: list[int] = state.panel_ids
+panel_numbers = {panel_id: position + 1 for position, panel_id in enumerate(panel_ids)}
+holders = {panel_of(source_id): source_id for source_id in source_ids}
+
+if state.get("legacy_rows") and not problems:
+    # A Project from before typed Panels: give each Source's Panel the size
+    # the old rules gave it, so the Output is the one the Project made before.
+    try:
+        old_panels = legacy_panels(
+            [as_source(source_id, on_screen(source_id)) for source_id in source_ids],
+            [clips[source_id] for source_id in source_ids],
+            [state.legacy_rows[source_id] for source_id in source_ids],
+        )
+    except EditError:
+        old_panels = [starting_panel(cropped_size(source_id) or (2, 2)) for source_id in source_ids]
+    for source_id, old in zip(source_ids, old_panels):
+        panel_id = panel_of(source_id)
+        state[f"pn_row_{panel_id}"] = old.row
+        state[f"pn_width_{panel_id}"] = old.width
+        state[f"pn_height_{panel_id}"] = old.height
+    # A Row the old layout left black at its end keeps that place, as an empty Panel.
+    for old in old_panels[len(source_ids) :]:
+        add_panel(old.row, old.width, old.height)
+    panel_ids = state.panel_ids
+    panel_numbers = {panel_id: position + 1 for position, panel_id in enumerate(panel_ids)}
+    state.legacy_rows = None
+
+for panel_id in panel_ids:
+    holder = holders.get(panel_id)
+    if state[f"pn_width_{panel_id}"] or holder not in clips or state.get("legacy_rows"):
+        continue
+    # A Panel made for a new Source starts at its Row's height and the width
+    # that fits the Source. The first Panel of all starts at its Source's size.
+    row = state[f"pn_row_{panel_id}"]
+    row_heights = [
+        state[f"pn_height_{other}"]
+        for other in panel_ids
+        if state[f"pn_height_{other}"] and state[f"pn_row_{other}"] == row
+    ]
+    start = starting_panel(
+        cropped_size(holder) or (infos[holder].width, infos[holder].height),
+        max(row_heights) if row_heights else None,
+    )
+    state[f"pn_width_{panel_id}"], state[f"pn_height_{panel_id}"] = start.width, start.height
+
+sized_panels = [panel_id for panel_id in panel_ids if state[f"pn_width_{panel_id}"]]
+# Kept alive across runs in which their controls are not drawn.
+for panel_id in panel_ids:
+    for key in PANEL_KEYS:
+        state[f"{key}_{panel_id}"] = state[f"{key}_{panel_id}"]
+
 # The first Source sets the Output up. Overlays start switched off.
 first_id = source_ids[0]
-if first_id in clips:
-    # It also sets the size of the layout, from the first place in Row 1.
-    state[f"row_{first_id}"] = 1
 first_path = Path(paths[first_id])
 for key, value in {
     "lead_in": 0.0,
@@ -344,12 +538,22 @@ def source_label(source_id: int) -> str:
     return f"Source {numbers[source_id]}: {Path(paths[source_id]).name}"
 
 
-# The Audio Source is the first Source with sound, until the user chooses.
-with_sound = [source_id for source_id in source_ids if source_id in infos and infos[source_id].has_sound]
+def panel_label(panel_id: int) -> str:
+    holder = holders.get(panel_id)
+    return f"Panel {panel_numbers[panel_id]}: " + ("empty" if holder is None else source_label(holder))
+
+
+# The Audio Panel is the first Panel whose Source has sound, until the user chooses.
+with_sound = [
+    panel_id
+    for panel_id in panel_ids
+    if holders.get(panel_id) in infos and infos[holders[panel_id]].has_sound
+]
 audio_options = [NO_SOUND] + [
-    source_id
-    for source_id in source_ids
-    if source_id in with_sound or (source_id in problems and source_id == state.get("audio_pick"))
+    panel_id
+    for panel_id in panel_ids
+    if panel_id in with_sound
+    or (holders.get(panel_id) in problems and panel_id == state.get("audio_pick"))
 ]
 if not state.get("audio_chosen") or state.get("audio_pick") not in audio_options:
     state.audio_pick = with_sound[0] if with_sound else NO_SOUND
@@ -357,8 +561,71 @@ if not state.get("audio_chosen") or state.get("audio_pick") not in audio_options
 settings, result = st.columns([5, 6], gap="large")
 
 # ------------------------------------------------------------------- Settings
-size_hints, frame_hint_slots = {}, {}
+size_hints, frame_hint_slots, panel_hints = {}, {}, {}
 with settings:
+    with st.container(border=True):
+        st.subheader("Layout")
+        st.caption(
+            "Panels that share a Row sit side by side, in the order listed here. A Row is as "
+            "tall as its tallest Panel, and the Output is as wide as its widest Row."
+        )
+        for position, panel_id in enumerate(panel_ids):
+            st.markdown(f"**{panel_label(panel_id)}**")
+            if panel_id not in sized_panels:
+                st.caption("This Panel gets its size once its Source's file is located.")
+                continue
+            columns = st.columns([2, 3, 3, 1, 1, 1], vertical_alignment="bottom")
+            columns[0].number_input(
+                "Row",
+                key=f"pn_row_{panel_id}",
+                min_value=1,
+                max_value=max(1, len(panel_ids)),
+                step=1,
+                help="Row 1 is the top of the Output. Only the order of the numbers counts.",
+            )
+            columns[1].number_input(
+                "Width (px)", key=f"pn_width_{panel_id}", min_value=2, step=2
+            )
+            columns[2].number_input(
+                "Height (px)", key=f"pn_height_{panel_id}", min_value=2, step=2
+            )
+            columns[3].button(
+                "",
+                icon=":material/arrow_upward:",
+                key=f"panel_up_{panel_id}",
+                on_click=move_panel,
+                args=(panel_id, -1),
+                disabled=position == 0,
+                help="List this Panel earlier, which moves it left in its Row.",
+            )
+            columns[4].button(
+                "",
+                icon=":material/arrow_downward:",
+                key=f"panel_down_{panel_id}",
+                on_click=move_panel,
+                args=(panel_id, 1),
+                disabled=position == len(panel_ids) - 1,
+                help="List this Panel later, which moves it right in its Row.",
+            )
+            columns[5].button(
+                "",
+                icon=":material/delete:",
+                key=f"panel_remove_{panel_id}",
+                on_click=remove_panel,
+                args=(panel_id,),
+                disabled=panel_id in holders,
+                help="Remove this Panel. Only an empty Panel can be removed.",
+            )
+            panel_hints[panel_id] = st.empty()
+        st.button(
+            "Add a Panel",
+            icon=":material/add:",
+            key="add_panel",
+            on_click=add_empty_panel,
+            help="An empty Panel beside the last one, at its Row's height and the same width. "
+            "An empty Panel is black in the Output until a Source is put in it.",
+        )
+
     with st.container(border=True):
         st.subheader("Sources")
         tabs = st.tabs([source_label(source_id) for source_id in source_ids])
@@ -484,31 +751,55 @@ with settings:
                         edge.capitalize(), key=f"crop_{edge}_{source_id}", min_value=0, step=10
                     )
 
-                sets_row_height = source_id == first_id
-                st.number_input(
-                    "Row",
-                    key=f"row_{source_id}",
-                    min_value=1,
-                    max_value=max(1, len(source_ids)),
-                    step=1,
-                    disabled=sets_row_height,
-                    help="Row 1 is the top of the Output. Sources that share a Row sit side by "
-                    "side, in the order they were added, and are matched in height. A Source in "
-                    "a Row of its own sits under Row 1 and is matched in width. Source 1 is "
-                    "always first in Row 1.",
+                own_panel = panel_of(source_id)
+                state[f"panel_pick_{source_id}"] = own_panel
+                st.selectbox(
+                    "Panel",
+                    [own_panel, *empty_panels()],
+                    key=f"panel_pick_{source_id}",
+                    format_func=lambda panel_id: f"Panel {panel_numbers[panel_id]}",
+                    on_change=assign_panel,
+                    args=(source_id,),
+                    help="The Panel this Source is shown in. It can be moved into any empty "
+                    "Panel; the Panel it leaves stays in the layout, empty.",
                 )
-                st.number_input(
-                    "Resize to width (px)",
-                    key=f"source_width_{source_id}",
-                    value=None,
-                    min_value=2,
-                    step=10,
-                    placeholder="Cropped size" if sets_row_height else "Scaled to fit its Panel",
-                    disabled=not sets_row_height,
-                    help="Only for Source 1, which sets the height of Row 1 and the width of "
-                    "Column 1. Leave empty to keep the cropped size. Applied after the crop; the "
-                    "height follows without distortion. Every other Source is scaled to fit.",
-                )
+                cropped = cropped_size(source_id)
+                can_scale = cropped is not None and own_panel in sized_panels
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    st.number_input(
+                        "Resize to width (px)",
+                        key=f"source_width_{source_id}",
+                        value=None,
+                        min_value=2,
+                        step=10,
+                        placeholder="Fitted inside its Panel",
+                        help="Leave empty to fit the Source inside its Panel. Applied after the "
+                        "crop; the height follows without distortion. A Source smaller than its "
+                        "Panel gets Bars, and one larger is cut off evenly at both sides.",
+                    )
+                    st.button(
+                        "Scale width to Panel",
+                        key=f"scale_width_{source_id}",
+                        on_click=set_resize,
+                        args=(source_id, state[f"pn_width_{own_panel}"] if can_scale else 0),
+                        disabled=not can_scale,
+                        help="Fills in the width that makes this Source as wide as its Panel. "
+                        "It acts once: press it again after changing the crop or the Panel.",
+                    )
+                    st.button(
+                        "Scale height to Panel",
+                        key=f"scale_height_{source_id}",
+                        on_click=set_resize,
+                        args=(
+                            source_id,
+                            width_for_height(cropped, state[f"pn_height_{own_panel}"])
+                            if can_scale
+                            else 0,
+                        ),
+                        disabled=not can_scale,
+                        help="Fills in the width that makes this Source as high as its Panel. "
+                        "It acts once: press it again after changing the crop or the Panel.",
+                    )
                 size_hints[source_id] = st.empty()
 
                 with st.expander("Advanced"):
@@ -590,13 +881,13 @@ with settings:
         )
         speed_hint = st.empty()
         st.selectbox(
-            "Audio Source",
+            "Audio Panel",
             audio_options,
             key="audio_pick",
-            format_func=lambda source_id: "No sound" if source_id == NO_SOUND else source_label(source_id),
+            format_func=lambda panel_id: "No sound" if panel_id == NO_SOUND else panel_label(panel_id),
             on_change=audio_was_chosen,
-            help="The one Source whose sound is used. Sound from every other Source is discarded. "
-            "The Output is silent during this Source's Gaps.",
+            help="The one Panel whose sound is used. Sound from every other Panel is discarded. "
+            "The Output is silent during this Panel's Gaps.",
         )
         sound_hint = st.empty()
         st.segmented_control(
@@ -709,15 +1000,28 @@ for source_id in clips:
     }
 kept = {source_id: state.get(f"kept_{source_id}", {}) for source_id in source_ids}
 quality = state.quality or Quality.MEDIUM
-audio_source = None if state.audio_pick == NO_SOUND else source_ids.index(state.audio_pick)
+audio_panel = None if state.audio_pick == NO_SOUND else panel_ids.index(state.audio_pick)
 
-# Every change is saved to the Project file, once the Project has one.
-if state.get("project_path"):
+# Every change is saved to the Project file, once the Project has one. A Panel
+# still waiting for its size cannot be written down, so saving waits with it.
+if state.get("project_path") and len(sized_panels) == len(panel_ids):
     project_text = project_file.dumps(
         project_file.ProjectSettings(
-            sources=[{"path": paths[source_id]} | kept[source_id] for source_id in source_ids],
+            sources=[
+                {"path": paths[source_id], "panel": panel_ids.index(panel_of(source_id))}
+                | kept[source_id]
+                for source_id in source_ids
+            ],
             shared={key: state[key] for key in project_file.SHARED_KEYS} | {"quality": quality},
-            audio_source=audio_source,
+            panels=[
+                {
+                    "row": state[f"pn_row_{panel_id}"],
+                    "width": state[f"pn_width_{panel_id}"],
+                    "height": state[f"pn_height_{panel_id}"],
+                }
+                for panel_id in panel_ids
+            ],
+            audio_panel=audio_panel,
         )
     )
     if project_text != state.get("saved_text"):
@@ -766,21 +1070,16 @@ with result:
     row_clips = [clips[source_id] for source_id in source_ids]
     project = Project(
         sources=tuple(
-            Source(
-                path=paths[source_id],
-                sync_point=values["sync_point"],
-                rotation=values["rotation"],
-                crop=Crop(
-                    values["crop_top"], values["crop_bottom"], values["crop_left"], values["crop_right"]
-                ),
-                aspect_override=(
-                    (values["aspect_width"], values["aspect_height"]) if values["aspect_on"] else None
-                ),
-                width=values["source_width"],
-                record_rate=values["record_rate"],
-                row=values["row"],
-            )
+            as_source(source_id, values, panel_ids.index(panel_of(source_id)))
             for source_id, values in kept.items()
+        ),
+        panels=tuple(
+            Panel(
+                width=state[f"pn_width_{panel_id}"],
+                height=state[f"pn_height_{panel_id}"],
+                row=state[f"pn_row_{panel_id}"],
+            )
+            for panel_id in panel_ids
         ),
         output=OutputSettings(
             lead_in=state.lead_in,
@@ -796,7 +1095,7 @@ with result:
             text_overlay=text_overlay,
             image_overlay=image_overlay,
         ),
-        audio_source=audio_source,
+        audio_panel=audio_panel,
     )
     if project.output.running_time <= 0:
         st.error("Lead-in plus Lead-out must be greater than zero.", icon=":material/error:")
@@ -839,66 +1138,73 @@ with result:
         frame_hint_slots[source_id].caption(
             f"Frame Hint at Output Speed {speed.output:.3g} and Output Rate {rate:g}: {hint}."
         )
-    if silent_because and audio_source is not None:
+    if silent_because and audio_panel is not None:
         sound_hint.warning(
             f"The Output has no sound, because {silent_because}. Sound is kept only when "
-            "the Audio Source and the Output Speed are both real time.",
+            "the Source in the Audio Panel and the Output Speed are both real time.",
             icon=":material/volume_off:",
         )
 
-    # Each Source's size, and what the layout does to it, shown beside its settings.
-    one_row = len(sizes.layout.row_heights) == 1
+    # Each Panel's size in the Output, shown beside its typed size when they differ.
+    scaled = abs(sizes.layout.scale - 1) > 1e-9
+    for panel_id, box in zip(panel_ids, sizes.layout.boxes):
+        if scaled:
+            panel_hints[panel_id].caption(
+                f"{box.width} by {box.height} pixels in the Output "
+                f"({sizes.layout.scale:.0%} of the typed size)."
+            )
+
+    def each_side(total: float, across: bool) -> str:
+        return f"{total / 2:g} pixels " + ("left and right" if across else "above and below")
+
+    # Each Source's size, and how it sits in its Panel, shown beside its settings.
     for position, source_id in enumerate(source_ids):
         cropped_width, cropped_height = sizes.cropped[position]
-        panel = sizes.layout.panels[position]
-        place = f"Row {panel.row + 1}, Column {panel.column + 1}"
-        box = f"{panel.width} by {panel.height} pixels"
-        hint = f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels"
-        if position == 0:
-            resized_width, resized_height = sizes.resized
-            if sizes.resized != sizes.cropped[0]:
-                hint += (
-                    f", resized to {resized_width} by {resized_height} "
-                    f"({resized_width / cropped_width:.0%} of that size)"
-                )
-            hint += "."
-            if len(source_ids) > 1 and one_row:
-                hint += f" It sets the Row height. Its Panel is {box}."
-            elif len(source_ids) > 1:
-                hint += f" It sets the height of Row 1 and the width of Column 1. Its Panel is {box}."
-        elif panel.sets_column:
-            hint += (
-                f". Scaled to the Row height, its Panel is {box} "
-                f"({panel.height / cropped_height:.0%} of that size)."
-            )
-            if not one_row:
-                hint += f" It is in {place}, and sets the width of Column {panel.column + 1}."
-        elif panel.sets_row:
-            hint += (
-                f". Scaled to the width of Column 1, its Panel is {box} "
-                f"({panel.width / cropped_width:.0%} of that size). It is in {place}, and sets "
-                f"the height of Row {panel.row + 1}."
-            )
+        picture = sizes.pictures[position]
+        box = sizes.layout.boxes[panel_ids.index(panel_of(source_id))]
+        typed_width = state[f"source_width_{source_id}"]
+        hint = (
+            f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels. "
+            f"Panel {panel_numbers[panel_of(source_id)]} is {box.width} by {box.height} pixels. "
+        )
+        hint += (
+            "Fitted inside it"
+            if typed_width is None
+            else f"At its resize width of {typed_width}"
+        )
+        hint += (
+            f", the Source is {picture.width} by {picture.height} pixels "
+            f"({picture.width / cropped_width:.0%} of that size)"
+        )
+        bars = [each_side(total, across) for total, across in zip(picture.bars, (True, False)) if total]
+        cuts = [each_side(total, across) for total, across in zip(picture.cut, (True, False)) if total]
+        if not bars and not cuts:
+            hint += " and fills the Panel."
         else:
-            scale = panel.picture_width / cropped_width
-            hint += f". Its Panel, in {place}, is already {box}. "
-            if panel.crop_hint is None:
-                hint += f"Scaled to fit ({scale:.0%} of that size), it fills the Panel with no Bars."
+            if bars:
+                hint += ", with Bars of " + " and ".join(bars)
+            hint += "."
+            if cuts:
+                hint += " The Panel cuts off " + " and ".join(cuts) + "."
+        crop_hint = picture.crop_hint
+        if crop_hint is not None and typed_width is None:
+            if crop_hint.width:
+                remedy = f"crop {crop_hint.width} pixels of width, to {cropped_width - crop_hint.width} wide"
             else:
-                bars_wide, bars_high = panel.bars
-                if panel.crop_hint.width:
-                    bars = f"{bars_high / 2:g} pixels above and below"
-                    lose = panel.crop_hint.width
-                    remedy = f"crop {lose} pixels of width, to {cropped_width - lose} wide"
-                else:
-                    bars = f"{bars_wide / 2:g} pixels left and right"
-                    lose = panel.crop_hint.height
-                    remedy = f"crop {lose} pixels of height, to {cropped_height - lose} high"
-                hint += (
-                    f"Scaled to fit, it is {panel.picture_width} by {panel.picture_height} pixels "
-                    f"({scale:.0%} of that size), with Bars of {bars}. Crop Hint: {remedy}, and "
-                    "it fills the Panel."
-                )
+                remedy = f"crop {crop_hint.height} pixels of height, to {cropped_height - crop_hint.height} high"
+            hint += f" Crop Hint: {remedy}, and it fills the Panel."
+        elif crop_hint is not None:
+            hidden = [
+                f"{amount} pixels of the Source's {side}"
+                for amount, side in ((crop_hint.width, "width"), (crop_hint.height, "height"))
+                if amount
+            ]
+            hint += (
+                " Crop Hint: what is cut off is " + " and ".join(hidden) + ", half from each "
+                "side. Crop that much yourself to choose which part is kept."
+            )
+        if bars and typed_width is not None:
+            hint += " Bars at a typed width go when the Source is scaled to the Panel."
         size_hints[source_id].caption(hint)
 
     # Each Overlay's size against the Output, shown beside its settings.
@@ -939,21 +1245,14 @@ with result:
             required=True,
         )
         if state.preview_show in source_ids:
-            panel = sizes.layout.panels[source_ids.index(state.preview_show)]
-            shown = frame[
-                panel.top : panel.top + panel.height, panel.left : panel.left + panel.width
-            ]
+            box = sizes.layout.boxes[panel_ids.index(panel_of(state.preview_show))]
+            shown = frame[box.top : box.top + box.height, box.left : box.left + box.width]
 
     with st.container(key="preview"):
         st.image(fit_within(shown, *PREVIEW_BOX), width="stretch")
-    sound = "no sound" if silent_because else f"sound from Source {audio_source + 1}"
-    grid_shape = ""
-    if not one_row:
-        column_count = len(sizes.layout.column_widths)
-        grid_shape = (
-            f", in {len(sizes.layout.row_heights)} Rows and {column_count} "
-            f"Column{'s' if column_count > 1 else ''}"
-        )
+    sound = "no sound" if silent_because else f"sound from Panel {audio_panel + 1}"
+    row_count = len(sizes.layout.row_heights)
+    grid_shape = f", in {row_count} Rows" if row_count > 1 else ""
     st.caption(
         f"Output is {width} by {height} pixels{grid_shape} and runs for {running_time:.3f} s "
         f"at {rate:g} frames per second, with {sound}. Output Speed {speed.output:.3g}."
@@ -1023,7 +1322,7 @@ with result:
         elif draft_silent:
             draft_sound = f"without sound, because {draft_silent}"
         else:
-            draft_sound = f"with sound from Source {audio_source + 1}"
+            draft_sound = f"with sound from Panel {audio_panel + 1}"
         st.caption(
             f"The Draft will be {draft_size.width} by {draft_size.height} pixels "
             f"({draft_size.width / width:.0%} of the Output's size) at low picture quality, "
@@ -1100,6 +1399,13 @@ with result:
         problem = "The Output cannot replace its own Source file."
     if problem:
         st.warning(problem, icon=":material/warning:")
+    if empty_panels():
+        st.info(
+            " and ".join(f"Panel {panel_numbers[panel_id]}" for panel_id in empty_panels())
+            + (" is empty and is" if len(empty_panels()) == 1 else " are empty and are")
+            + " black in the Output.",
+            icon=":material/crop_free:",
+        )
 
     replace_allowed = True
     if not problem and destination.exists():

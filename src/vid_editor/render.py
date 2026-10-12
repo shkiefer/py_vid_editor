@@ -19,8 +19,9 @@ from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips,
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
-from vid_editor.layout import GridLayout, grid_layout
-from vid_editor.model import Crop, DraftSettings, EditError, Project, Quality, Source
+from vid_editor.layout import Layout, Picture, even, panel_layout, picture_in, width_for_height
+from vid_editor.legacy_layout import grid_layout
+from vid_editor.model import Crop, DraftSettings, EditError, Panel, Project, Quality, Source
 from vid_editor.overlays import overlay_patches, stamper
 from vid_editor.timing import (
     FrameHint,
@@ -267,13 +268,16 @@ def speeds(project: Project, clips: Sequence[VideoFileClip]) -> Speeds:
 def silence_reason(project: Project, clips: Sequence[VideoFileClip]) -> str | None:
     """Why the Output has no sound, or None when it has.
 
-    Sound is kept only when the Audio Source and the Output are both real time.
+    Sound is kept only when the Source in the Audio Panel and the Output are
+    both real time.
     """
-    chosen = project.audio_source
+    if project.audio_panel is None:
+        return "no Audio Panel is chosen"
+    if not 0 <= project.audio_panel < len(project.panels):
+        raise EditError("The Audio Panel is not one of the Panels")
+    chosen = audio_source(project)
     if chosen is None:
-        return "no Audio Source is chosen"
-    if not 0 <= chosen < len(clips):
-        raise EditError("The Audio Source is not one of the Sources")
+        return f"Panel {project.audio_panel + 1} is empty"
     if clips[chosen].audio is None:
         return f"Source {chosen + 1} has no sound"
     speed = speeds(project, clips)
@@ -352,23 +356,6 @@ def output_rate(project: Project, clips: Sequence[VideoFileClip]) -> float:
     return project.output.rate or max(float(clip.fps) for clip in clips)
 
 
-def _in_row(project: Project, clips: Sequence[VideoFileClip]) -> list[tuple[VideoFileClip, Source]]:
-    """Each opened Source with its settings as they count in the layout.
-
-    Only the first Source's resize counts. It sets the height of the first Row
-    and the width of the first Column, and every other Source is scaled to
-    fit whatever its own resize says.
-    """
-    if not project.sources:
-        raise EditError("The Output needs at least one Source")
-    if len(project.sources) != len(clips):
-        raise ValueError("Each Source needs its own opened file")
-    return [
-        (clip, source if position == 0 else replace(source, width=None))
-        for position, (clip, source) in enumerate(zip(clips, project.sources))
-    ]
-
-
 def _named(error: EditError, position: int, project: Project) -> EditError:
     """Say which Source a problem belongs to, once there is more than one."""
     if len(project.sources) == 1:
@@ -376,62 +363,140 @@ def _named(error: EditError, position: int, project: Project) -> EditError:
     return EditError(f"Source {position + 1}: {error}")
 
 
-def _grid(sizes: Sequence[tuple[int, int]], project: Project) -> GridLayout:
+@dataclass(frozen=True)
+class Geometry:
+    """The sizes that follow from the Panels, the Sources' settings and the Output width."""
+
+    cropped: tuple[tuple[int, int], ...]
+    """Each Source after its rotation and crop, before any resize."""
+    layout: Layout
+    pictures: tuple[Picture, ...]
+    """Each Source's picture in its Panel, in the order of the Sources."""
+
+
+def geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
+    """Work out where every Panel and every Source sits. Plain arithmetic: no frame is read."""
+    if not project.sources:
+        raise EditError("The Output needs at least one Source")
+    if len(project.sources) != len(clips):
+        raise ValueError("Each Source needs its own opened file")
     try:
-        return grid_layout(
-            sizes, [source.row for source in project.sources], project.output.width
+        layout = panel_layout(
+            [(panel.width, panel.height, panel.row) for panel in project.panels],
+            project.output.width,
         )
     except ValueError as error:
         raise EditError(str(error)) from error
 
-
-@dataclass(frozen=True)
-class Geometry:
-    """The sizes that follow from the Sources' settings and the Output width."""
-
-    cropped: tuple[tuple[int, int], ...]
-    """Each Source after its rotation and crop, before any resize."""
-    resized: tuple[int, int]
-    """The first Source after its resize. Its height is the height of the first Row."""
-    layout: GridLayout
-
-
-def geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
-    """Work out every Panel size. Plain arithmetic: no frame is read."""
-    cropped = []
-    for position, (clip, source) in enumerate(_in_row(project, clips)):
+    cropped, pictures, taken = [], [], set()
+    for position, (clip, source) in enumerate(zip(clips, project.sources)):
+        if not 0 <= source.panel < len(project.panels):
+            raise EditError(f"Source {position + 1} is not assigned to a Panel")
+        if source.panel in taken:
+            raise EditError(f"Panel {source.panel + 1} holds more than one Source")
+        taken.add(source.panel)
         try:
-            sizes = source_sizes((int(clip.w), int(clip.h)), source)
+            size = source_sizes((int(clip.w), int(clip.h)), source)[0]
         except EditError as error:
             raise _named(error, position, project) from error
-        cropped.append(sizes[0])
-        if position == 0:
-            resized = sizes[1]
-    return Geometry(tuple(cropped), resized, _grid([resized, *cropped[1:]], project))
+        cropped.append(size)
+        panel = project.panels[source.panel]
+        pictures.append(
+            picture_in(
+                layout.boxes[source.panel],
+                (panel.width, panel.height),
+                layout.scale,
+                size,
+                source.width,
+            )
+        )
+    return Geometry(tuple(cropped), layout, tuple(pictures))
 
 
-def _picture_sizes(
-    project: Project, clips: Sequence[VideoFileClip]
-) -> tuple[GridLayout, list[tuple[int, int]]]:
-    """The layout, and the size each Source's picture is scaled to inside its Panel."""
-    layout = geometry(project, clips).layout
-    return layout, [(panel.picture_width, panel.picture_height) for panel in layout.panels]
+def _composed(
+    layout: Layout, pictures: Sequence[Picture], frames: Sequence[np.ndarray]
+) -> np.ndarray:
+    """One frame of the Output: the part of each Source its Panel shows, on black.
 
-
-def _composed(layout: GridLayout, pictures: Sequence[np.ndarray]) -> np.ndarray:
-    """One frame of the Output: each Source's picture in its Panel, on black.
-
-    The black shows as Bars beside a picture smaller than its Panel, and fills
-    any place in the grid that has no Source. Pictures are placed as plain
-    arrays rather than layered as MoviePy clips, which costs far more per frame.
+    The black is the Bars beside a picture smaller than its Panel, every empty
+    Panel, and whatever the Panels leave of the Output. Pictures are placed as
+    plain arrays rather than layered as MoviePy clips, which costs far more
+    per frame.
     """
-    frame = np.zeros((layout.height, layout.width, 3), dtype=np.uint8)
-    for panel, picture in zip(layout.panels, pictures):
-        frame[
-            panel.picture_top : panel.picture_top + panel.picture_height,
-            panel.picture_left : panel.picture_left + panel.picture_width,
-        ] = picture
-    return frame
+    composed = np.zeros((layout.height, layout.width, 3), dtype=np.uint8)
+    for picture, frame in zip(pictures, frames):
+        composed[
+            picture.top : picture.top + picture.shown_height,
+            picture.left : picture.left + picture.shown_width,
+        ] = frame[
+            picture.cut_top : picture.cut_top + picture.shown_height,
+            picture.cut_left : picture.cut_left + picture.shown_width,
+        ]
+    return composed
+
+
+def _fills_the_output(layout: Layout, pictures: Sequence[Picture]) -> bool:
+    """Whether one Source's picture is the whole Output, with nothing to place or cut."""
+    return (
+        len(pictures) == 1
+        and (pictures[0].width, pictures[0].height) == (layout.width, layout.height)
+        and (pictures[0].shown_width, pictures[0].shown_height) == (layout.width, layout.height)
+    )
+
+
+def starting_panel(size: tuple[int, int], row_height: int | None = None, row: int = 1) -> Panel:
+    """The Panel a new Source starts with.
+
+    `size` is the Source after its rotation and crop. The Panel takes its
+    Row's height and the width that fits the Source at that height. With no
+    Row height, as for the first Panel of all, it takes the Source's own size.
+    """
+    if row_height is None:
+        return Panel(width=max(2, size[0]), height=max(2, size[1]), row=row)
+    # An even width, so that Panels made this way add up to an even Output.
+    return Panel(width=even(width_for_height(size, row_height) + 1), height=row_height, row=row)
+
+
+def legacy_panels(
+    sources: Sequence[Source], clips: Sequence[VideoFileClip], rows: Sequence[int]
+) -> tuple[Panel, ...]:
+    """The Panels of a Project from before typed Panels.
+
+    The first Panels are one for each Source, in the order of the Sources,
+    each at the size the old rules gave it. Under those rules only the first
+    Source's resize counted; the others were fitted. A Row that was shorter
+    than another was left black at its right-hand end, so an empty Panel
+    follows for each such place. That keeps the Output as it was, where a Row
+    narrower than the Output would now be centred.
+    """
+    sizes = []
+    for position, (clip, source) in enumerate(zip(clips, sources)):
+        try:
+            cropped, resized = source_sizes((int(clip.w), int(clip.h)), source)
+        except EditError as error:
+            raise EditError(f"Source {position + 1}: {error}") from error
+        sizes.append(resized if position == 0 else cropped)
+    try:
+        old = grid_layout(sizes, rows)
+    except ValueError as error:
+        raise EditError(str(error)) from error
+    panels = [
+        Panel(width=panel.width, height=panel.height, row=panel.row + 1) for panel in old.panels
+    ]
+    filled = {(panel.row, panel.column) for panel in old.panels}
+    for row, height in enumerate(old.row_heights):
+        for column, width in enumerate(old.column_widths):
+            if (row, column) not in filled:
+                panels.append(Panel(width=width, height=height, row=row + 1))
+    return tuple(panels)
+
+
+def audio_source(project: Project) -> int | None:
+    """Position of the Source in the Audio Panel, or None when there is none."""
+    for position, source in enumerate(project.sources):
+        if source.panel == project.audio_panel:
+            return position
+    return None
 
 
 def _is_untouched(clip: VideoFileClip, source: Source, panel_size: tuple[int, int]) -> bool:
@@ -448,29 +513,33 @@ def build_output(
     project: Project, clips: Sequence[VideoFileClip], rough: bool = False
 ) -> VideoClip:
     """Compose the whole Output. `clips` are the opened Sources, in order."""
-    layout, panel_sizes = _picture_sizes(project, clips)
+    sizes = geometry(project, clips)
+    layout, pictures = sizes.layout, sizes.pictures
     output_speed = speeds(project, clips).output
 
-    # Each Source is scaled once, straight to the size of its Panel.
+    # Each Source is scaled once, straight to its size in the Output.
     panels = []
-    for clip, source, size in zip(clips, project.sources, panel_sizes):
-        picture = clip
+    for clip, source, picture in zip(clips, project.sources, pictures):
+        size = (picture.width, picture.height)
+        edited = clip
         if not _is_untouched(clip, source, size):
-            picture = clip.image_transform(
+            edited = clip.image_transform(
                 lambda frame, source=source, size=size: edit_frame(frame, source, size, rough)
             )
-        panels.append(_panel(clip, source, picture, project, output_speed))
+        panels.append(_panel(clip, source, edited, project, output_speed))
 
-    if len(panels) == 1:
+    if _fills_the_output(layout, pictures):
         output = panels[0]
     else:
         output = VideoClip(
-            frame_function=lambda t: _composed(layout, [panel.get_frame(t) for panel in panels]),
+            frame_function=lambda t: _composed(
+                layout, pictures, [panel.get_frame(t) for panel in panels]
+            ),
             duration=project.output.running_time,
         )
 
     silent = silence_reason(project, clips) is not None
-    sound = None if silent else panels[project.audio_source].audio
+    sound = None if silent else panels[audio_source(project)].audio
     output = output.without_audio() if sound is None else output.with_audio(sound)
 
     patches = overlay_patches(project.output, layout.width)
@@ -487,13 +556,15 @@ def preview(
     Each Source's frame is read straight from its file and edited here, which
     gives the same picture as `build_output` without building it.
     """
-    layout, panel_sizes = _picture_sizes(project, clips)
+    sizes = geometry(project, clips)
+    layout, pictures = sizes.layout, sizes.pictures
     last_frame_time = max(0.0, project.output.running_time - 1 / output_rate(project, clips))
     output_time = min(max(output_time, 0.0), last_frame_time)
     speed = speeds(project, clips)
 
     panels = []
-    for clip, source, size, own_speed in zip(clips, project.sources, panel_sizes, speed.sources):
+    for clip, source, picture, own_speed in zip(clips, project.sources, pictures, speed.sources):
+        size = (picture.width, picture.height)
         span = span_of(clip, source, project, speed.output)
         file_time = file_time_at(
             output_time,
@@ -506,7 +577,10 @@ def preview(
             panels.append(edit_frame(source_frame(clip, file_time), source, size))
         else:
             panels.append(np.zeros((size[1], size[0], 3), dtype=np.uint8))  # a Gap
-    frame = panels[0] if len(panels) == 1 else _composed(layout, panels)
+    if _fills_the_output(layout, pictures):
+        frame = panels[0]
+    else:
+        frame = _composed(layout, pictures, panels)
 
     patches = overlay_patches(project.output, layout.width)
     if patches:
@@ -596,7 +670,7 @@ def draft_project(
             text = replace(text, size=max(4, round(text.size * draft.width / full_width)))
         output = replace(output, width=draft.width, text_overlay=text)
     return replace(
-        project, output=output, audio_source=project.audio_source if draft.sound else None
+        project, output=output, audio_panel=project.audio_panel if draft.sound else None
     )
 
 

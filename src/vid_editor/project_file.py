@@ -15,8 +15,11 @@ from typing import Any
 
 from vid_editor.model import Corner, EditError, Quality, SpeedChoice
 
-FORMAT = 2
-_READABLE_FORMATS = (1, 2)  # format 1 held one Source and had no Audio Source
+FORMAT = 3
+# Format 1 held one Source and had no Audio Source. Format 2 held several, each
+# with a Row, and the Sources set the sizes. Format 3 lists its Panels.
+_READABLE_FORMATS = (1, 2, 3)
+_FIRST_FORMAT_WITH_PANELS = 3
 EXTENSION = ".json"
 
 
@@ -58,11 +61,19 @@ _SOURCE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
     ("crop_right", "crop.right", _number(int, 0)),
     ("source_width", "width", _optional(_number(int, 2))),
     ("record_rate", "record_rate", _optional(_number(float, 0.001))),
-    ("row", "row", _number(int, 1)),
     ("aspect_on", "aspect_override.on", _switch),
     ("aspect_width", "aspect_override.width", _number(int, 2)),
     ("aspect_height", "aspect_override.height", _number(int, 2)),
 )
+
+# What each entry of "panels" holds.
+_PANEL_FIELDS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
+    ("row", _number(int, 1)),
+    ("width", _number(int, 2)),
+    ("height", _number(int, 2)),
+)
+PANEL_KEYS = tuple(key for key, _ in _PANEL_FIELDS)
+"""The settings each Panel has."""
 
 # Shared setting, section of the file, name within the section, reader.
 _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
@@ -102,11 +113,18 @@ class ProjectSettings:
     """What a Project file holds."""
 
     sources: list[dict[str, Any]]
-    """One dict per Source, in the order added: its "path" and any of `SOURCE_KEYS`."""
+    """One dict per Source, in the order added: its "path", any of
+    `SOURCE_KEYS`, and "panel", the position in `panels` of its Panel counted
+    from 0. A Source from a file with no Panels has "row" instead, counted
+    from 1."""
     shared: dict[str, Any] = field(default_factory=dict)
     """Any of `SHARED_KEYS`."""
-    audio_source: int | None = 0
-    """Position in `sources` of the Audio Source, counted from 0. None is no sound."""
+    panels: list[dict[str, int]] | None = None
+    """One dict per Panel, in listed order, holding `PANEL_KEYS`. None for a
+    file from before typed Panels: each Source then has a Panel of its own, in
+    the same order, whose size the old rules give (`render.legacy_panels`)."""
+    audio_panel: int | None = 0
+    """Position in `panels` of the Audio Panel, counted from 0. None is no sound."""
 
 
 def _put(section: dict, name: str, value: Any) -> None:
@@ -141,6 +159,9 @@ def dumps(settings: ProjectSettings) -> str:
         for key, name, _ in _SOURCE_FIELDS:
             if key in source:
                 _put(entry, name, source[key])
+        if "panel" in source:
+            # Counted from 1, to match "Panel 1" on the screen.
+            entry["panel"] = source["panel"] + 1
         sources.append(entry)
     sections: dict[str, dict] = {section: {} for section in _SHARED_SECTIONS}
     for key, section, name, _ in _SHARED_FIELDS:
@@ -148,9 +169,9 @@ def dumps(settings: ProjectSettings) -> str:
             _put(sections[section], name, settings.shared[key])
     document = {
         "format": FORMAT,
+        "panels": [{key: panel[key] for key in PANEL_KEYS} for panel in settings.panels or []],
         "sources": sources,
-        # Counted from 1, to match "Source 1" on the screen.
-        "audio_source": None if settings.audio_source is None else settings.audio_source + 1,
+        "audio_panel": None if settings.audio_panel is None else settings.audio_panel + 1,
         **sections,
     }
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
@@ -173,6 +194,24 @@ def loads(text: str, name: str = "This file") -> ProjectSettings:
     entries = document.get("sources")
     if not isinstance(entries, list) or not entries:
         raise EditError(f"{name} must hold at least one Source")
+    has_panels = document["format"] >= _FIRST_FORMAT_WITH_PANELS
+
+    panels = None
+    if has_panels:
+        listed = document.get("panels")
+        if not isinstance(listed, list) or not listed:
+            raise EditError(f"{name} must hold at least one Panel")
+        panels = []
+        for number, entry in enumerate(listed, start=1):
+            try:
+                panels.append(
+                    {
+                        key: _read(entry, key, read, f"panel {number} {key}", name)
+                        for key, read in _PANEL_FIELDS
+                    }
+                )
+            except KeyError as error:
+                raise EditError(f"{name} does not give Panel {number} a {error.args[0]}") from error
 
     sources = []
     for number, entry in enumerate(entries, start=1):
@@ -185,6 +224,19 @@ def loads(text: str, name: str = "This file") -> ProjectSettings:
                 continue
         if not source.get("path"):
             raise EditError(f"{name} does not say where Source {number} is")
+        if has_panels:
+            try:
+                place = _read(
+                    entry, "panel", _number(int, 1, len(panels)), f"source {number} panel", name
+                )
+            except KeyError as error:
+                raise EditError(f"{name} does not say which Panel Source {number} is in") from error
+            source["panel"] = place - 1
+        else:
+            try:
+                source["row"] = _read(entry, "row", _number(int, 1), f"source {number} row", name)
+            except KeyError:
+                source["row"] = 1
         sources.append(source)
 
     shared = {}
@@ -195,16 +247,22 @@ def loads(text: str, name: str = "This file") -> ProjectSettings:
         except KeyError:
             continue
 
-    audio_source = 0
-    if "audio_source" in document:
-        chosen = document["audio_source"]
+    # Before typed Panels the file named an Audio Source. Each Source of such a
+    # file gets a Panel of its own in the same order, so the number carries over.
+    audio_key = "audio_panel" if has_panels else "audio_source"
+    audio_count = len(panels) if has_panels else len(sources)
+    audio_panel = 0
+    if audio_key in document:
+        chosen = document[audio_key]
         if chosen is None:
-            audio_source = None
-        elif isinstance(chosen, int) and not isinstance(chosen, bool) and 1 <= chosen <= len(sources):
-            audio_source = chosen - 1
+            audio_panel = None
+        elif isinstance(chosen, int) and not isinstance(chosen, bool) and 1 <= chosen <= audio_count:
+            audio_panel = chosen - 1
         else:
-            raise EditError(f"{name} has a value for audio source that cannot be used: {chosen!r}")
-    return ProjectSettings(sources=sources, shared=shared, audio_source=audio_source)
+            raise EditError(
+                f"{name} has a value for {audio_key.replace('_', ' ')} that cannot be used: {chosen!r}"
+            )
+    return ProjectSettings(sources=sources, shared=shared, panels=panels, audio_panel=audio_panel)
 
 
 def load(path: str | Path) -> ProjectSettings:
