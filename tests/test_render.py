@@ -1,4 +1,4 @@
-"""The Preview and the rendered Output for one Source."""
+"""The Preview, the Draft and the rendered Output."""
 
 import gc
 from dataclasses import replace

@@ -124,6 +124,7 @@ _Avoid_: Padding, filler, freeze
 - A **Source** is resized after it is cropped, to a chosen width with the height following, so crop amounts never need retyping and the resize never distorts
 - A **Sync Point** is typed in by the user and can then be refined frame by frame; refining overwrites the typed value, and retyping discards the refinement
 - **Sources** are added one at a time, and the **Preview** is refreshed after each is added
+- Each **Source** is given a **Row**; within a **Row**, **Sources** run left to right in the order added, which gives each its **Column**
 - **Sources** placed side by side form a **Row** and are matched in height
 - **Sources** placed top and bottom form a **Column** and are matched in width
 - In a grid, every **Row** is height matched and every **Column** is width matched
@@ -134,10 +135,10 @@ _Avoid_: Padding, filler, freeze
 - A later **Row** may be longer than the first; a **Source** that starts a new **Column** is matched to the height of its **Row** and sets the width of that **Column**
 - A place in the grid with no **Source** is black
 - **Bars** are split evenly either side of the **Source**
-- The **Crop Hint** is measured in the same pixels as the crop, on the picture after rotation and crop, and names either width or height, never both
+- The **Crop Hint** is measured in the same pixels as the crop, on the picture after rotation and crop; a **Source** that already fills its **Panel** has none
 - The order in which **Sources** are added therefore decides which ones set sizes and which ones get a **Crop Hint**
 - Changing the crop of a size-setting **Source** recalculates every dependent **Panel** and **Crop Hint**
-- Every other **Source** has a **Panel** of already fixed size and gets a **Crop Hint** for width (after matching the **Row** height) and for height (after matching the **Column** width)
+- Every other **Source** has a **Panel** of already fixed size and gets a **Crop Hint**: for width when it is too wide after matching the **Row** height, or for height when it is too tall after matching the **Column** width
 - Each **Source** has a **Record Rate** and a **Playback Rate**, which together give its **Source Speed**
 - A **Source** whose **Record Rate** is not given is real time: its **Record Rate** is taken to be its **Playback Rate**
 - Every **Source** is shown at the **Output Speed**, so all **Panels** move through the real event at the same rate

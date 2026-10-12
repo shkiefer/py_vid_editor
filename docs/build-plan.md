@@ -1,6 +1,6 @@
 # Build plan
 
-Agreed build order and the decisions that are not domain language. Domain terms live in `../CONTEXT.md`; hard-to-reverse decisions live in `adr/`.
+The build order, now complete, and the decisions that are not domain language. Domain terms live in `../CONTEXT.md`; hard-to-reverse decisions live in `adr/`.
 
 ## Slices
 
@@ -31,7 +31,7 @@ Each slice ends with something runnable.
 
 - **Adding and removing Sources**: each Source added goes to the right-hand end of Row 1, and any Source can be removed. Changing a Source's file path keeps its settings, which is how a moved file is located; a different video is added as a new Source.
 - **Per-Source geometry**: aspect ratio override (advanced, off by default), then rotation (any angle, with quarter-turn buttons), then crop (pixels per edge, measured after rotation), then resize (a width in pixels; the height follows).
-- **Row height**: the first Source sets the height of Row 1, after its own resize. Every other Source in Row 1 is scaled to that height, so its own resize is switched off. With no Output width the first Source is not scaled at all. Each Source is scaled once, straight to the size of its Panel, and Panel edges are rounded one by one so the widths add up to an even Output width.
+- **Row height**: the first Source sets the height of Row 1, after its own resize. Every other Source in Row 1 is scaled to that height, so its own resize is switched off. With no Output width the first Source is not scaled at all. Each Source is scaled once, straight to the size of its picture in its Panel. Column and Row edges are rounded one by one, so the Panels add up to an even Output width and height.
 - **Placing a Source**: each Source has a Row number, 1 at the top. Sources that share a Row run left to right in the order added, which also gives each its Column. Only the order of the Row numbers counts, so a Row left empty closes up. Source 1 is always first in Row 1, and when it is removed the next Source takes its place.
 - **Sizes in a grid**: Rows are settled top to bottom. The first Source of a later Row is matched to the width of Column 1. A Source that starts a new Column is matched to its Row height. Every other Source is scaled to fit its Panel and centred, with Bars either side.
 - **Crop Hint feedback**: beside each Source's crop the screen gives its place in the grid, its Panel size, the size it is scaled to, the size of its Bars, and how many pixels of width or height to crop to fill the Panel.
@@ -47,6 +47,7 @@ Each slice ends with something runnable.
 
 ### Speed
 
+- **Settings that may be left empty** (Record Rate, Resize to width, Output width, Output Rate) can be emptied again after a number has been typed. Streamlit needs `value=None` on each for that; without it an emptied field takes its smallest allowed value.
 - **Record Rate entry**: left empty, a Source's Record Rate is its Playback Rate, which makes it real time. A Record Rate within 0.5% of the Playback Rate counts as the same rate, so 30 typed for a 29.97 file is still real time and keeps its sound.
 - **Output Speed choices**: slowest Source (default), real time, or custom. The custom value is kept when another choice is in use.
 - **Output Rate**: left empty it follows the highest Playback Rate among the Sources.
@@ -57,7 +58,7 @@ Each slice ends with something runnable.
 
 - **Preview time**: the Preview shows every Source at its Sync Point by default, with a control to move earlier or later.
 - **Preview size**: the Preview is shrunk to fit 1280 by 800 pixels before it is sent to the browser, and shown no taller than 55% of the window height.
-- **Show one Source**: with several Sources the Preview can show one Source's Panel alone, at a larger size.
+- **Show one Source**: with several Sources the Preview can show one Source's Panel alone, Bars included, at a larger size.
 
 ### Output
 
@@ -91,6 +92,8 @@ Each slice ends with something runnable.
 - **The Preview at the Sync Event shows exactly the frame a stepped Sync Point names.** The rendered Output takes a frame every 1 / Output Rate seconds from its start, so it shows that same frame at the Sync Event only when the Lead-in is a whole number of Output frames.
 - **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
 - **A Draft of two 1080p Sources takes about 2 to 3 s for each second of a 60 frames per second Output**, against about 11 s at full size. Most of what is left is reading the Source files, so a smaller Draft is hardly quicker: 480 wide saved under 10% against 640.
+- **A grid is large and slow at its natural size.** Two 1080p Sources in two Rows and two Columns gave a 2528 by 4492 Output, and a 2 s Draft of it at 640 wide took about 11 s. An Output width brings the size down.
+- **Sources cannot be reordered.** The order added decides which Source sets sizes and where each sits in its Row. To change it, remove a Source and add it again.
 - **The app does not reopen the last Project on start.** Open Project is used each time.
 
 ## Open decisions
@@ -102,6 +105,7 @@ Each slice ends with something runnable.
 ## Deferred
 
 - Text label on each Panel.
+- Reordering Sources, and choosing a Source's Column directly.
 - More than one text or image Overlay, timed Overlays, colour choices.
 - Hosting for other users (needs upload handling).
 - Formats other than MP4.
