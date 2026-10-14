@@ -16,8 +16,8 @@ Each slice ends with something runnable.
 8. **Draft render** (done) — a quick, small render around the Sync Event, written beside the Output.
 9. **Column, then grid** (done) — width matching, Bars, Crop Hint.
 10. **Layout of typed Panels** (done) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
-11. **Sequences** — several Sources in one Panel, play order, the Anchor, Start Point and End Point, and sound that follows the Source on show.
-12. **Transitions** — a fade from black at the start and to black at the end of a Source, each with its own length. No crossfade.
+11. **Sequence, with cuts** — the Sequence / Synced grid switch; Sources in play order in one typed Panel, each with a Start Point, an End Point and a Play Speed; a timing table, a Preview at any running time, and the Render; a new Project file format.
+12. **Transitions** — at each Join a cut, a fade through black or a crossfade, each with its own length; a fade in at the start and out at the end; sound that fades and crossfades with the picture; a Draft around a chosen Join.
 
 ## Decisions
 
@@ -94,15 +94,17 @@ Each slice ends with something runnable.
 
 ### Agreed for slices 11 and 12, not yet built
 
-The terms are in `../CONTEXT.md`: Sequence, Anchor, Start Point, End Point, Transition.
+The terms are in `../CONTEXT.md`: Synced grid, Sequence, Join, Transition, Play Speed, Start Point, End Point. Why the two workflows are kept apart is in `adr/0004-two-workflows-do-not-mix.md`.
 
-- **Sequences** (slice 11): a Panel can hold several Sources, shown one after another in a play order kept by the Panel, with buttons to move a Source earlier or later. The Panel picker in a Source's tab then offers every Panel, not only empty ones.
-- **The Anchor** (slice 11): one Source in each Panel carries its Sync Point; the first put there, until a marker in the Panel's list is moved. It can sit anywhere in the play order. Only the Anchor shows a Sync Point and its frame stepper.
-- **Start Point and End Point** (slice 11): every Source has both, as file times, the whole file unless set, with the same frame buttons as the Sync Point. A Source hands over to the next at its End Point. Sources before the Anchor are placed by where they end, and Sources after it by where they start, each hard against its neighbour. One too long for the Output loses its far end.
-- **Sound in a Sequence** (slice 11): the Output takes its sound from whichever Source the Audio Panel is showing, and is silent for a stretch whose Source is not real time or has no sound. The screen says which.
-- **A Sequence never adds a Sync Event** and never changes the Output running time. A stretch no Source fills is still a Gap.
-- **Transitions** (slice 12): each Source can have a fade from black at its start and a fade to black at its end, each with its own length, within its own time on show. No crossfade: two Sources are never on show in one Panel at once, and sound is never mixed.
-- **Start Point, End Point and Transitions** are settings of every Source, so a Panel with one Source can use them too.
+- **The switch** (slice 11): "Sequence / Synced grid" at the top of the page, saved in the Project. Switching keeps the Sources and their picture settings. The grid's Sync Points, Record Rates, Panels, Lead-in, Lead-out, Output Speed, Audio Panel and Draft are hidden in a Sequence but kept and saved, and the Sequence's settings likewise in a grid.
+- **Play order** (slice 11): the order of the Sources, with buttons in each Source's tab to move it earlier or later. This also reorders the tabs of a grid.
+- **The Sequence Panel** (slice 11): one width and height, typed, starting at the first Source's size after its rotation and crop. An Output width scales it as it scales a grid.
+- **Start Point, End Point and Play Speed** (slice 11): file times, the whole file unless set, with frame buttons like the Sync Point's. Play Speed is a multiplier, 1 unless set; a Source not at 1 is silent.
+- **Timing table** (slice 11): one row per Source with its Output start and end, time on show, file stretch used, Frame Hint and whether it has sound (and why not), and the total running time.
+- **Preview** (slice 11): a slider over the running time, and a way to jump to the start of any Source.
+- **Transitions** (slice 12): one per Join, a cut, a fade through black or a crossfade, with a length; a fade from black at the start and to black at the end. A fade through black of length L is L/2 out and L/2 in. A crossfade mixes the two sounds over its length.
+- **Sequence Draft** (slice 12): a rough render a chosen number of seconds either side of a chosen Join.
+- **Project file** (slice 11): format 4 adds the workflow, the Sequence Panel and each Source's Start Point, End Point and Play Speed. A file without a workflow opens as a Synced grid.
 
 ## Known limits
 

@@ -11,7 +11,7 @@ One input video file.
 _Avoid_: Clip, input, video
 
 **Panel**:
-An area of the **Output**, set up in the layout, that shows one **Source** or one **Sequence**, or is empty.
+An area of the **Output** that shows one **Source** at a time, or is empty. A **Synced grid** has as many as its layout sets up; a **Sequence** has exactly one.
 _Avoid_: Cell, tile, pane, window
 
 **Output**:
@@ -23,24 +23,32 @@ The saved set of **Sources** and settings that produces one **Output**.
 _Avoid_: Session, workspace, job
 
 **Audio Panel**:
-The one **Panel** whose sound is used in the **Output**, taken from whichever **Source** it is showing.
+In a **Synced grid**, the one **Panel** whose sound is used in the **Output**, taken from the **Source** in it.
 _Avoid_: Audio Source, audio track, sound file, master audio
 
 **Draft**:
 A small, low-quality render of a stretch of the **Output** around the **Sync Event**, made only for checking it in motion.
 _Avoid_: Preview video, proxy, test render
 
-**Sequence**:
-The **Sources** that share one **Panel**, shown one after another in a chosen play order.
-_Avoid_: Playlist, track, reel
+**Synced grid**:
+The workflow that shows the same real-world event from several **Sources** at once, each in its own **Panel**, aligned on the **Sync Event**.
+_Avoid_: Grid mode, multicam, split screen
 
-**Anchor**:
-The one **Source** in a **Panel** that carries the **Panel**'s **Sync Point**.
-_Avoid_: Synced Source, sync source, master, reference
+**Sequence**:
+The workflow that shows **Sources** one after another in the **Output**'s one **Panel**, in a chosen play order, with no **Sync Event**.
+_Avoid_: Playlist, track, reel, montage
+
+**Join**:
+The place in a **Sequence** where one **Source** hands over to the next in play order.
+_Avoid_: Cut point, edit point, splice
 
 **Transition**:
-A fade between black and a **Source**'s picture at the start or the end of that **Source**'s time on show.
-_Avoid_: Crossfade, dissolve, wipe
+What happens at a **Join**: a cut, a fade through black, or a crossfade, each but the cut with its own length. Also a fade from black at the very start of a **Sequence** or to black at its very end.
+_Avoid_: Dissolve, wipe, effect
+
+**Play Speed**:
+In a **Sequence**, how much faster or slower than its file a **Source** is played, where 1 is as the file plays.
+_Avoid_: Speed factor, slow-mo, rate
 
 **Overlay**:
 Text or an image drawn on top of the **Output** as a whole.
@@ -139,16 +147,13 @@ _Avoid_: Padding, filler, freeze
 - Every **Source** has its own resize, and can be scaled in one step so that its width, or its height, equals its **Panel**'s
 - A **Source** is centred in its **Panel**: where it is smaller it gets **Bars**, and where it is larger the overflow is cut off evenly from both sides
 - A **Source** with no resize set is scaled to fit inside its **Panel**
-- A **Panel** with more than one **Source** shows them as a **Sequence**, and holds their play order
-- A **Panel** can be set up with no **Source** in it; an empty **Panel** is black, has no **Anchor**, and cannot be the **Audio Panel**
+- In a **Synced grid** a **Panel** holds at most one **Source**; several **Sources** share a **Panel** only in a **Sequence**
+- A **Panel** can be set up with no **Source** in it; an empty **Panel** is black and cannot be the **Audio Panel**
 - Removing a **Source** leaves its **Panel** in place; a **Panel** can be removed only when it is empty
 - Adding a **Source** makes a new **Panel** for it at the end of the first **Row**, unless it is assigned to an empty one; it can then be moved into another **Panel**
 - A new **Panel** starts at the height of its **Row** and the width that fits its **Source** at that height; the first **Panel** of all starts at its **Source**'s own size
 - Once a **Panel** exists its size changes only when it is retyped, so cropping or rotating a **Source** never resizes a **Panel**
-- Each **Source** has its own crop, rotation, resize, and aspect ratio; only an **Anchor** has a **Sync Point**
-- Every **Panel** that holds a **Source** has exactly one **Anchor**: the first **Source** put in it, until another is chosen; a **Panel**'s only **Source** is its **Anchor**
-- When the **Anchor** leaves a **Panel**, the first remaining **Source** in play order becomes the **Anchor**
-- An **Anchor**'s **Sync Point** lies between its **Start Point** and its **End Point**
+- Each **Source** has its own crop, rotation, resize, and aspect ratio, used in both workflows
 - A **Source** is rotated before it is cropped, so crop amounts and the **Crop Hint** are measured on the picture as it appears after rotation
 - A **Source** is resized after it is cropped, to a chosen width with the height following, so crop amounts never need retyping and the resize never distorts
 - A **Sync Point** is typed in by the user and can then be refined frame by frame; refining overwrites the typed value, and retyping discards the refinement
@@ -167,8 +172,7 @@ _Avoid_: Padding, filler, freeze
 - The user can override the **Output Speed** once the **Sources** are synced
 - A **Source** slower than the **Output Speed** has frames dropped; a **Source** faster than the **Output Speed** has each frame held longer
 - The **Output** has sound only when the **Output Speed** is real time, and then only while the **Source** the **Audio Panel** is showing is real time and has sound
-- Each **Anchor** is placed on **Event Time** using its own **Sync Point** and **Source Speed**; **Panels** are never matched to one another directly
-- Every other **Source** in a **Sequence** is placed from its **Anchor** outwards, at its own **Source Speed**
+- Each **Source** in a **Synced grid** is placed on **Event Time** using its own **Sync Point** and **Source Speed**; **Panels** are never matched to one another directly
 - The **Output Speed** is chosen as the slowest **Source Speed**, real time, or a custom value
 - The **Output Rate** defaults to the highest **Playback Rate** among the **Sources**
 - Every **Source** gets a **Frame Hint** whenever the **Output Speed** or **Output Rate** changes
@@ -180,18 +184,30 @@ _Avoid_: Padding, filler, freeze
 - An **Overlay** is sized against the finished **Output** and stays on through every **Gap**
 - The **Output** has at most one **Audio Panel**; sound from every other **Panel** is discarded, never mixed
 - Only a **Panel** holding a **Source** that has sound can be the **Audio Panel**; the default is the first such **Panel**, and "none" is allowed
-- Sound stays locked to its picture: in a **Sequence** the sound changes with the **Source** on show, and the **Output** is silent during the **Audio Panel**'s **Gaps**
+- Sound stays locked to its picture: the **Output** is silent during the **Audio Panel**'s **Gaps**
 - A **Panel** with less footage before its **Sync Point** than the **Lead-in** has a **Gap** at the front
 - A **Panel** with less footage after its **Sync Point** than the **Lead-out** has a **Gap** at the back
 - A **Gap** never shortens the **Output** and never freezes a frame
-- A **Sequence** does not add a **Sync Event**: its **Anchor** carries the **Panel**'s **Sync Point**, and the others play where the **Anchor** has no footage, in place of a **Gap**
-- The **Anchor** can sit anywhere in the play order; a **Source** before it is placed by where it ends, hard against the start of the next, and a **Source** after it by where it starts, hard against the end of the one before
-- A **Source** before the **Anchor** that is too long loses its beginning to the start of the **Output**; a **Source** after it that is too long loses its end
-- Every **Source** has a **Start Point** and an **End Point**, in or out of a **Sequence**; one **Source** hands over to the next in its **Sequence** at its **End Point**, and the next begins from its own **Start Point**
-- **Start Point** and **End Point** are file times, like the **Sync Point**, so on a **Source** that is not real time they are not **Output** running time
-- Each **Source** can have a start **Transition** and an end **Transition**, each with its own length, in or out of a **Sequence**
-- A **Transition** happens within its own **Source**'s time on show; two **Sources** are never on show in one **Panel** at the same moment
-- A **Sequence** never changes the **Output** running time, which stays **Lead-in** plus **Lead-out**
+
+### The two workflows
+
+- A **Project** is either a **Synced grid** or a **Sequence**, chosen at the top of the page and saved with it; the two never mix
+- Switching a **Project** between them keeps its **Sources** with their crop, rotation, resize and aspect ratio; each workflow's own settings are kept, unused, while the other is chosen, so switching back restores them
+- A **Sequence** joins a **Synced grid** only as a rendered file, added like any other **Source**
+- In a **Sequence** there is no **Sync Point**, **Lead-in**, **Lead-out**, **Record Rate**, **Output Speed**, **Audio Panel** or **Gap**
+
+### Sequence
+
+- The play order of a **Sequence** is the order of its **Sources**, changed by moving a **Source** earlier or later
+- The **Sequence**'s one **Panel** has a typed width and height, starting at the first **Source**'s size after its rotation and crop; each **Source** is fitted, resized, given **Bars** and a **Crop Hint** as in any **Panel**
+- Each **Source** in a **Sequence** has a **Start Point**, an **End Point** and a **Play Speed**; it shows its file from **Start Point** to **End Point**, so its time on show is that stretch divided by its **Play Speed**
+- **Start Point** and **End Point** are file times, so on a **Source** whose **Play Speed** is not 1 they are not **Output** running time
+- The **Output** running time of a **Sequence** is the sum of its **Sources**' times on show, less the length of every crossfade
+- A fade through black leaves the running time as it is; a crossfade overlaps the two **Sources** it joins by its length, so the running time is shorter by that much
+- A crossfade is no longer than the time on show of either **Source** it joins
+- Each **Source** in a **Sequence** keeps its own sound, which plays with its picture; sound from two **Sources** is mixed only during a crossfade, and a fade through black fades the sound with the picture
+- A **Source** whose **Play Speed** is not 1, or that has no sound, is silent in a **Sequence**
+- The **Output Rate** of a **Sequence** defaults to the highest **Playback Rate** among its **Sources**, and each **Source** gets a **Frame Hint** at its **Play Speed**
 
 ## Example dialogue
 
