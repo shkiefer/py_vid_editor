@@ -17,11 +17,14 @@ from vid_editor.model import (
     Panel,
     Project,
     Quality,
+    SequenceSettings,
     Source,
     SpeedChoice,
     TextOverlay,
+    Workflow,
 )
 from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patch
+from vid_editor.sequence import on_show
 from vid_editor.timing import frame_at, source_speed, step_frames
 from vid_editor.render import (
     EditError,
@@ -35,6 +38,11 @@ from vid_editor.render import (
     preview,
     render,
     render_draft,
+    sequence_frame_hints,
+    sequence_geometry,
+    sequence_preview,
+    sequence_silence_reason,
+    sequence_spans,
     silence_reason,
     source_info,
     source_sizes,
@@ -184,18 +192,38 @@ def remove_source(source_id: int) -> None:
         # added sets the Output up afresh.
         for panel_id in list(state.get("panel_ids", [])):
             remove_panel(panel_id)
-        for key in ("lead_in", "lead_out", "out_width", "out_rate", "out_folder", "out_name"):
+        for key in (
+            "lead_in",
+            "lead_out",
+            "out_width",
+            "out_rate",
+            "out_folder",
+            "out_name",
+            "seq_width",
+            "seq_height",
+        ):
             state.pop(key, None)
         state.audio_chosen = False
         state.legacy_rows = None
 
 
+def move_source(source_id: int, step: int) -> None:
+    """Move a Source earlier or later in the play order, which is the order of the Sources."""
+    source_ids = list(st.session_state.source_ids)
+    position = source_ids.index(source_id)
+    target = min(max(position + step, 0), len(source_ids) - 1)
+    source_ids.insert(target, source_ids.pop(position))
+    st.session_state.source_ids = source_ids
+
+
 def new_project() -> None:
+    """Clear the screen. The workflow chosen stays as it is."""
     state = st.session_state
     for source_id in list(state.get("source_ids", [])):
         remove_source(source_id)
-    for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render", "draft"):
-        state.pop(key, None)
+    for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render", "draft", "seq_time"):
+        if key != "workflow":
+            state.pop(key, None)
     state.update(
         project_path=None, saved_text=None, saved_at=None, audio_chosen=False
     )
@@ -248,6 +276,23 @@ def step_sync_point(source_id: int, frames: int, rate: float, frame_count: int) 
     st.session_state.preview_offset = 0.0
 
 
+def step_trim(
+    source_id: int, name: str, frames: int, rate: float, frame_count: int, duration: float
+) -> None:
+    """Move a Start Point or End Point frame by frame. An End Point not set starts at the end."""
+    key = f"{name}_{source_id}"
+    current = st.session_state[key]
+    st.session_state[key] = step_frames(
+        duration if current is None else current, frames, rate, frame_count
+    )
+    # The Preview moves to where the Source starts or ends.
+    st.session_state.seq_focus = (source_id, name)
+
+
+def set_seq_time(output_time: float) -> None:
+    st.session_state.seq_time = output_time
+
+
 def audio_was_chosen() -> None:
     st.session_state.audio_chosen = True
 
@@ -271,6 +316,7 @@ def open_project() -> None:
         return
     state = st.session_state
     new_project()
+    state.workflow = settings.shared.get("workflow", Workflow.GRID)
     if settings.panels is None:
         # From before typed Panels. Each Source gets a Panel of its own, sized
         # by the old rules once every file is open. Under those rules only the
@@ -321,6 +367,10 @@ def show_project_status(slot) -> None:
 state = st.session_state
 state.setdefault("source_ids", [])
 state.setdefault("panel_ids", [])
+state.setdefault("workflow", Workflow.GRID)
+# The switch is drawn on every run, but its value is kept alive like the others.
+state.workflow = state.workflow
+grid = state.workflow is Workflow.GRID
 
 # A path typed or browsed for is added as a Source here, before the box that
 # holds it is drawn, so that the box can be emptied again.
@@ -332,7 +382,7 @@ if new_path:
     except EditError as error:
         state.add_error = str(error)
     else:
-        into = state.get("add_into", NEW_PANEL)
+        into = state.get("add_into", NEW_PANEL) if grid else NEW_PANEL
         add_source(new_path, panel_id=into if into in empty_panels() else None)
         state.add_into = NEW_PANEL
 
@@ -356,6 +406,29 @@ show_project_status(project_status)
 if project_error := state.pop("project_error", None):
     st.error(project_error, icon=":material/error:")
 
+# ------------------------------------------------------------------- Workflow
+st.segmented_control(
+    "Workflow",
+    list(Workflow),
+    key="workflow",
+    format_func=lambda workflow: workflow.value,
+    required=True,
+    help="A Synced grid shows the same event from several Sources at once, each in its own "
+    "Panel, aligned on the Sync Event. A Sequence shows its Sources one after another in one "
+    "Panel. Switching keeps the Sources and their picture settings, and keeps the other "
+    "workflow's settings for when you switch back.",
+)
+if grid:
+    st.caption(
+        "Synced grid: each Source in its own Panel, all aligned on the Sync Event."
+    )
+else:
+    st.caption(
+        "Sequence: the Sources play one after another, in the order of their tabs, "
+        "each from its Start Point to its End Point. To show a Sequence in a grid, render it "
+        "and add the file to a grid as a Source."
+    )
+
 # -------------------------------------------------------------- Add a Source
 with st.container(horizontal=True, vertical_alignment="bottom"):
     st.text_input(
@@ -363,11 +436,16 @@ with st.container(horizontal=True, vertical_alignment="bottom"):
         key="add_path",
         placeholder=r"C:\videos\camera_a.mp4",
         help="Type or paste the path of a video file on this computer and press Enter, "
-        "or use Browse. Each Source added gets a new Panel at the right-hand end of "
-        "Row 1, unless an empty Panel is chosen for it.",
+        "or use Browse. "
+        + (
+            "Each Source added gets a new Panel at the right-hand end of "
+            "Row 1, unless an empty Panel is chosen for it."
+            if grid
+            else "Each Source added plays after the ones before it."
+        ),
     )
     st.button("Browse", icon=":material/folder_open:", on_click=browse_to_add, key="browse_source")
-    if empty_panels():
+    if grid and empty_panels():
         listed = state.panel_ids
         if state.get("add_into") not in (NEW_PANEL, *empty_panels()):
             state.add_into = NEW_PANEL
@@ -415,12 +493,20 @@ for source_id in source_ids:
         "aspect_on": False,
         "aspect_width": info.width,
         "aspect_height": info.height,
+        "start_point": 0.0,
+        "end_point": None,
+        "play_speed": 1.0,
     }
     for name, value in fresh.items():
         if f"{name}_{source_id}" not in state:
             state[f"{name}_{source_id}"] = kept.get(name, value)
-    sync_key = f"sync_point_{source_id}"
-    state[sync_key] = min(state[sync_key], info.duration)
+        # Kept alive across runs in which the workflow chosen does not draw its control.
+        state[f"{name}_{source_id}"] = state[f"{name}_{source_id}"]
+    for name in ("sync_point", "start_point"):
+        state[f"{name}_{source_id}"] = min(state[f"{name}_{source_id}"], info.duration)
+    end_key = f"end_point_{source_id}"
+    if state[end_key] is not None:
+        state[end_key] = min(state[end_key], info.duration)
 
 def as_source(source_id: int, values: dict, panel: int = 0) -> Source:
     """A Source as the model has it, from its settings on the screen."""
@@ -437,6 +523,9 @@ def as_source(source_id: int, values: dict, panel: int = 0) -> Source:
         width=values["source_width"],
         record_rate=values["record_rate"],
         panel=panel,
+        start_point=values["start_point"],
+        end_point=values["end_point"],
+        play_speed=values["play_speed"],
     )
 
 
@@ -528,10 +617,30 @@ for key, value in {
     **OVERLAY_DEFAULTS,
 }.items():
     state.setdefault(key, value)
+# The Sequence's one Panel starts at the first Source's size after its rotation and crop.
+if state.get("seq_width") is None and first_id in infos:
+    first_size = cropped_size(first_id) or (infos[first_id].width, infos[first_id].height)
+    state.seq_width, state.seq_height = max(2, first_size[0]), max(2, first_size[1])
+state.setdefault("seq_time", 0.0)
 # The Draft settings sit below the Preview, which is not drawn while something
-# is wrong. Setting them here keeps them from being forgotten in the meantime.
-for key in ("draft_lead_in", "draft_lead_out", "draft_width", "draft_sound"):
+# is wrong, and each workflow's settings are not drawn while the other is
+# chosen. Setting them here keeps them from being forgotten in the meantime.
+for key in (
+    "draft_lead_in",
+    "draft_lead_out",
+    "draft_width",
+    "draft_sound",
+    "lead_in",
+    "lead_out",
+    "speed_choice",
+    "speed_custom",
+    "preview_offset",
+    "seq_time",
+):
     state[key] = state[key]
+for key in ("seq_width", "seq_height"):
+    if key in state:
+        state[key] = state[key]
 
 
 def source_label(source_id: int) -> str:
@@ -557,74 +666,88 @@ audio_options = [NO_SOUND] + [
 ]
 if not state.get("audio_chosen") or state.get("audio_pick") not in audio_options:
     state.audio_pick = with_sound[0] if with_sound else NO_SOUND
+state.audio_pick = state.audio_pick  # kept while a Sequence hides it
 
 settings, result = st.columns([5, 6], gap="large")
 
 # ------------------------------------------------------------------- Settings
-size_hints, frame_hint_slots, panel_hints = {}, {}, {}
+size_hints, frame_hint_slots, panel_hints, trim_hints = {}, {}, {}, {}
+sequence_hint = None
 with settings:
-    with st.container(border=True):
-        st.subheader("Layout")
-        st.caption(
-            "Panels that share a Row sit side by side, in the order listed here. A Row is as "
-            "tall as its tallest Panel, and the Output is as wide as its widest Row."
-        )
-        for position, panel_id in enumerate(panel_ids):
-            st.markdown(f"**{panel_label(panel_id)}**")
-            if panel_id not in sized_panels:
-                st.caption("This Panel gets its size once its Source's file is located.")
-                continue
-            columns = st.columns([2, 3, 3, 1, 1, 1], vertical_alignment="bottom")
-            columns[0].number_input(
-                "Row",
-                key=f"pn_row_{panel_id}",
-                min_value=1,
-                max_value=max(1, len(panel_ids)),
-                step=1,
-                help="Row 1 is the top of the Output. Only the order of the numbers counts.",
+    if grid:
+        with st.container(border=True):
+            st.subheader("Layout")
+            st.caption(
+                "Panels that share a Row sit side by side, in the order listed here. A Row is as "
+                "tall as its tallest Panel, and the Output is as wide as its widest Row."
             )
-            columns[1].number_input(
-                "Width (px)", key=f"pn_width_{panel_id}", min_value=2, step=2
+            for position, panel_id in enumerate(panel_ids):
+                st.markdown(f"**{panel_label(panel_id)}**")
+                if panel_id not in sized_panels:
+                    st.caption("This Panel gets its size once its Source's file is located.")
+                    continue
+                columns = st.columns([2, 3, 3, 1, 1, 1], vertical_alignment="bottom")
+                columns[0].number_input(
+                    "Row",
+                    key=f"pn_row_{panel_id}",
+                    min_value=1,
+                    max_value=max(1, len(panel_ids)),
+                    step=1,
+                    help="Row 1 is the top of the Output. Only the order of the numbers counts.",
+                )
+                columns[1].number_input(
+                    "Width (px)", key=f"pn_width_{panel_id}", min_value=2, step=2
+                )
+                columns[2].number_input(
+                    "Height (px)", key=f"pn_height_{panel_id}", min_value=2, step=2
+                )
+                columns[3].button(
+                    "",
+                    icon=":material/arrow_upward:",
+                    key=f"panel_up_{panel_id}",
+                    on_click=move_panel,
+                    args=(panel_id, -1),
+                    disabled=position == 0,
+                    help="List this Panel earlier, which moves it left in its Row.",
+                )
+                columns[4].button(
+                    "",
+                    icon=":material/arrow_downward:",
+                    key=f"panel_down_{panel_id}",
+                    on_click=move_panel,
+                    args=(panel_id, 1),
+                    disabled=position == len(panel_ids) - 1,
+                    help="List this Panel later, which moves it right in its Row.",
+                )
+                columns[5].button(
+                    "",
+                    icon=":material/delete:",
+                    key=f"panel_remove_{panel_id}",
+                    on_click=remove_panel,
+                    args=(panel_id,),
+                    disabled=panel_id in holders,
+                    help="Remove this Panel. Only an empty Panel can be removed.",
+                )
+                panel_hints[panel_id] = st.empty()
+            st.button(
+                "Add a Panel",
+                icon=":material/add:",
+                key="add_panel",
+                on_click=add_empty_panel,
+                help="An empty Panel beside the last one, at its Row's height and the same width. "
+                "An empty Panel is black in the Output until a Source is put in it.",
             )
-            columns[2].number_input(
-                "Height (px)", key=f"pn_height_{panel_id}", min_value=2, step=2
+    else:
+        with st.container(border=True):
+            st.subheader("Sequence Panel")
+            st.caption(
+                "Every Source is shown in this one Panel, in turn. It started at the first "
+                "Source's size; it changes only when retyped."
             )
-            columns[3].button(
-                "",
-                icon=":material/arrow_upward:",
-                key=f"panel_up_{panel_id}",
-                on_click=move_panel,
-                args=(panel_id, -1),
-                disabled=position == 0,
-                help="List this Panel earlier, which moves it left in its Row.",
-            )
-            columns[4].button(
-                "",
-                icon=":material/arrow_downward:",
-                key=f"panel_down_{panel_id}",
-                on_click=move_panel,
-                args=(panel_id, 1),
-                disabled=position == len(panel_ids) - 1,
-                help="List this Panel later, which moves it right in its Row.",
-            )
-            columns[5].button(
-                "",
-                icon=":material/delete:",
-                key=f"panel_remove_{panel_id}",
-                on_click=remove_panel,
-                args=(panel_id,),
-                disabled=panel_id in holders,
-                help="Remove this Panel. Only an empty Panel can be removed.",
-            )
-            panel_hints[panel_id] = st.empty()
-        st.button(
-            "Add a Panel",
-            icon=":material/add:",
-            key="add_panel",
-            on_click=add_empty_panel,
-            help="An empty Panel beside the last one, at its Row's height and the same width. "
-            "An empty Panel is black in the Output until a Source is put in it.",
-        )
+            seq_columns = st.columns(2)
+            seq_columns[0].number_input("Width (px)", key="seq_width", min_value=2, step=2)
+            seq_columns[1].number_input("Height (px)", key="seq_height", min_value=2, step=2)
+            sequence_hint = st.empty()
 
     with st.container(border=True):
         st.subheader("Sources")
@@ -651,6 +774,25 @@ with settings:
                         args=(source_id,),
                         key=f"remove_{source_id}",
                     )
+                    if not grid:
+                        st.button(
+                            "Earlier",
+                            icon=":material/arrow_back:",
+                            on_click=move_source,
+                            args=(source_id, -1),
+                            key=f"earlier_{source_id}",
+                            disabled=source_id == source_ids[0],
+                            help="Play this Source before the one now before it.",
+                        )
+                        st.button(
+                            "Later",
+                            icon=":material/arrow_forward:",
+                            on_click=move_source,
+                            args=(source_id, 1),
+                            key=f"later_{source_id}",
+                            disabled=source_id == source_ids[-1],
+                            help="Play this Source after the one now after it.",
+                        )
                 if source_id in problems:
                     st.error(problems[source_id], icon=":material/error:")
                     st.info(
@@ -665,36 +807,95 @@ with settings:
                     f"Playback Rate {info.playback_rate:g} frames per second, "
                     f"{'has sound' if info.has_sound else 'no sound'}."
                 )
-                st.number_input(
-                    "Sync Point (s)",
-                    key=f"sync_point_{source_id}",
-                    min_value=0.0,
-                    max_value=info.duration,
-                    step=0.1,
-                    format="%.3f",
-                    help="The time in this file at which the Sync Event is seen. Type it from "
-                    "a video player, then refine it with the frame buttons.",
-                )
-                with st.container(horizontal=True):
-                    for name, frames, label in (
-                        ("back_10", -10, "−10 frames"),
-                        ("back_1", -1, "−1 frame"),
-                        ("forward_1", 1, "+1 frame"),
-                        ("forward_10", 10, "+10 frames"),
-                    ):
-                        st.button(
-                            label,
-                            key=f"step_{name}_{source_id}",
-                            on_click=step_sync_point,
-                            args=(source_id, frames, info.playback_rate, info.frame_count),
-                        )
-                sync_frame = frame_at(state[f"sync_point_{source_id}"], info.playback_rate)
-                st.caption(
-                    f"The Sync Point is in frame {sync_frame + 1} of {info.frame_count}, which the "
-                    f"file shows from {sync_frame / info.playback_rate:.3f} to "
-                    f"{(sync_frame + 1) / info.playback_rate:.3f} s. "
-                    "Stepping moves the Preview to the Sync Event."
-                )
+                if grid:
+                    st.number_input(
+                        "Sync Point (s)",
+                        key=f"sync_point_{source_id}",
+                        min_value=0.0,
+                        max_value=info.duration,
+                        step=0.1,
+                        format="%.3f",
+                        help="The time in this file at which the Sync Event is seen. Type it from "
+                        "a video player, then refine it with the frame buttons.",
+                    )
+                    with st.container(horizontal=True):
+                        for name, frames, label in (
+                            ("back_10", -10, "−10 frames"),
+                            ("back_1", -1, "−1 frame"),
+                            ("forward_1", 1, "+1 frame"),
+                            ("forward_10", 10, "+10 frames"),
+                        ):
+                            st.button(
+                                label,
+                                key=f"step_{name}_{source_id}",
+                                on_click=step_sync_point,
+                                args=(source_id, frames, info.playback_rate, info.frame_count),
+                            )
+                    sync_frame = frame_at(state[f"sync_point_{source_id}"], info.playback_rate)
+                    st.caption(
+                        f"The Sync Point is in frame {sync_frame + 1} of {info.frame_count}, which the "
+                        f"file shows from {sync_frame / info.playback_rate:.3f} to "
+                        f"{(sync_frame + 1) / info.playback_rate:.3f} s. "
+                        "Stepping moves the Preview to the Sync Event."
+                    )
+                else:
+                    trim_columns = st.columns(2)
+                    trim_columns[0].number_input(
+                        "Start Point (s)",
+                        key=f"start_point_{source_id}",
+                        min_value=0.0,
+                        max_value=info.duration,
+                        step=0.1,
+                        format="%.3f",
+                        help="The time in this file at which this Source starts to play.",
+                    )
+                    trim_columns[1].number_input(
+                        "End Point (s)",
+                        key=f"end_point_{source_id}",
+                        value=None,
+                        min_value=0.0,
+                        max_value=info.duration,
+                        step=0.1,
+                        format="%.3f",
+                        placeholder=f"End of the file ({info.duration:.3f})",
+                        help="The time in this file at which the next Source takes over. "
+                        "Leave empty to play to the end of the file.",
+                    )
+                    for column, name in zip(trim_columns, ("start_point", "end_point")):
+                        with column.container(horizontal=True):
+                            for step_name, frames, label in (
+                                ("back_10", -10, "−10"),
+                                ("back_1", -1, "−1"),
+                                ("forward_1", 1, "+1"),
+                                ("forward_10", 10, "+10"),
+                            ):
+                                st.button(
+                                    label,
+                                    key=f"step_{name}_{step_name}_{source_id}",
+                                    on_click=step_trim,
+                                    args=(
+                                        source_id,
+                                        name,
+                                        frames,
+                                        info.playback_rate,
+                                        info.frame_count,
+                                        info.duration,
+                                    ),
+                                    help=f"Move the {name.replace('_', ' ').title()} "
+                                    f"{label} frame{'s' if abs(frames) > 1 else ''}. "
+                                    "The Preview moves there.",
+                                )
+                    st.number_input(
+                        "Play Speed",
+                        key=f"play_speed_{source_id}",
+                        min_value=0.01,
+                        max_value=100.0,
+                        step=0.25,
+                        format="%.3g",
+                        help="1 plays the file as it is. 0.5 plays it at half speed, taking twice "
+                        "as long; 2 at double speed. Sound is kept only at 1.",
+                    )
+                    trim_hints[source_id] = st.empty()
                 with st.container(horizontal=True, vertical_alignment="bottom"):
                     st.number_input(
                         "Rotation (degrees, anticlockwise)",
@@ -720,28 +921,29 @@ with settings:
                         key=f"turn_right_{source_id}",
                     )
 
-                # Without value=None a field that holds a number cannot be emptied
-                # again: Streamlit puts its smallest allowed value there instead.
-                record_rate = st.number_input(
-                    "Record Rate (frames per second)",
-                    key=f"record_rate_{source_id}",
-                    value=None,
-                    min_value=0.001,
-                    step=1.0,
-                    placeholder=f"Same as the Playback Rate ({info.playback_rate:g}): real time",
-                    help="How many frames per second the camera captured of the real world. "
-                    "Leave empty for a real-time file. Fill it in for slow motion (higher than "
-                    "the Playback Rate) or timelapse (lower).",
-                )
-                own_speed = source_speed(info.playback_rate, record_rate)
-                if own_speed == 1:
-                    st.caption("Source Speed 1: this file shows the real event in real time.")
-                else:
-                    st.caption(
-                        f"Source Speed {own_speed:.3g} (Playback Rate {info.playback_rate:g} "
-                        f"divided by Record Rate {record_rate:g}): 1 s of this file shows "
-                        f"{own_speed:.3g} s of the real event."
+                if grid:
+                    # Without value=None a field that holds a number cannot be emptied
+                    # again: Streamlit puts its smallest allowed value there instead.
+                    record_rate = st.number_input(
+                        "Record Rate (frames per second)",
+                        key=f"record_rate_{source_id}",
+                        value=None,
+                        min_value=0.001,
+                        step=1.0,
+                        placeholder=f"Same as the Playback Rate ({info.playback_rate:g}): real time",
+                        help="How many frames per second the camera captured of the real world. "
+                        "Leave empty for a real-time file. Fill it in for slow motion (higher than "
+                        "the Playback Rate) or timelapse (lower).",
                     )
+                    own_speed = source_speed(info.playback_rate, record_rate)
+                    if own_speed == 1:
+                        st.caption("Source Speed 1: this file shows the real event in real time.")
+                    else:
+                        st.caption(
+                            f"Source Speed {own_speed:.3g} (Playback Rate {info.playback_rate:g} "
+                            f"divided by Record Rate {record_rate:g}): 1 s of this file shows "
+                            f"{own_speed:.3g} s of the real event."
+                        )
                 frame_hint_slots[source_id] = st.empty()
 
                 st.markdown("Crop (pixels, measured after rotation)")
@@ -752,19 +954,27 @@ with settings:
                     )
 
                 own_panel = panel_of(source_id)
-                state[f"panel_pick_{source_id}"] = own_panel
-                st.selectbox(
-                    "Panel",
-                    [own_panel, *empty_panels()],
-                    key=f"panel_pick_{source_id}",
-                    format_func=lambda panel_id: f"Panel {panel_numbers[panel_id]}",
-                    on_change=assign_panel,
-                    args=(source_id,),
-                    help="The Panel this Source is shown in. It can be moved into any empty "
-                    "Panel; the Panel it leaves stays in the layout, empty.",
-                )
+                if grid:
+                    state[f"panel_pick_{source_id}"] = own_panel
+                    st.selectbox(
+                        "Panel",
+                        [own_panel, *empty_panels()],
+                        key=f"panel_pick_{source_id}",
+                        format_func=lambda panel_id: f"Panel {panel_numbers[panel_id]}",
+                        on_change=assign_panel,
+                        args=(source_id,),
+                        help="The Panel this Source is shown in. It can be moved into any empty "
+                        "Panel; the Panel it leaves stays in the layout, empty.",
+                    )
+                    own_size = (
+                        (state[f"pn_width_{own_panel}"], state[f"pn_height_{own_panel}"])
+                        if own_panel in sized_panels
+                        else None
+                    )
+                else:
+                    own_size = (state.seq_width, state.seq_height)
                 cropped = cropped_size(source_id)
-                can_scale = cropped is not None and own_panel in sized_panels
+                can_scale = cropped is not None and own_size is not None
                 with st.container(horizontal=True, vertical_alignment="bottom"):
                     st.number_input(
                         "Resize to width (px)",
@@ -781,7 +991,7 @@ with settings:
                         "Scale width to Panel",
                         key=f"scale_width_{source_id}",
                         on_click=set_resize,
-                        args=(source_id, state[f"pn_width_{own_panel}"] if can_scale else 0),
+                        args=(source_id, own_size[0] if can_scale else 0),
                         disabled=not can_scale,
                         help="Fills in the width that makes this Source as wide as its Panel. "
                         "It acts once: press it again after changing the crop or the Panel.",
@@ -792,7 +1002,7 @@ with settings:
                         on_click=set_resize,
                         args=(
                             source_id,
-                            width_for_height(cropped, state[f"pn_height_{own_panel}"])
+                            width_for_height(cropped, own_size[1])
                             if can_scale
                             else 0,
                         ),
@@ -824,23 +1034,24 @@ with settings:
 
     with st.container(border=True):
         st.subheader("Output")
-        lead_columns = st.columns(2)
-        lead_columns[0].number_input(
-            "Lead-in (s)",
-            key="lead_in",
-            min_value=0.0,
-            step=0.5,
-            format="%.3f",
-            help="Output running time from the start of the Output to the Sync Event.",
-        )
-        lead_columns[1].number_input(
-            "Lead-out (s)",
-            key="lead_out",
-            min_value=0.0,
-            step=0.5,
-            format="%.3f",
-            help="Output running time from the Sync Event to the end of the Output.",
-        )
+        if grid:
+            lead_columns = st.columns(2)
+            lead_columns[0].number_input(
+                "Lead-in (s)",
+                key="lead_in",
+                min_value=0.0,
+                step=0.5,
+                format="%.3f",
+                help="Output running time from the start of the Output to the Sync Event.",
+            )
+            lead_columns[1].number_input(
+                "Lead-out (s)",
+                key="lead_out",
+                min_value=0.0,
+                step=0.5,
+                format="%.3f",
+                help="Output running time from the Sync Event to the end of the Output.",
+            )
         size_columns = st.columns(2)
         size_columns[0].number_input(
             "Output width (px)",
@@ -861,35 +1072,41 @@ with settings:
             placeholder="Highest Playback Rate",
             help="Leave empty to use the highest Playback Rate among the Sources.",
         )
-        speed_columns = st.columns(2)
-        speed_columns[0].selectbox(
-            "Output Speed",
-            list(SpeedChoice),
-            key="speed_choice",
-            format_func=lambda choice: choice.value,
-            help="How fast the Output shows the real event. Every Source is shown at this speed. "
-            "Slowest Source drops no frame of any Source for being too slow. The Output keeps "
-            "the same running time; a slower speed covers less of the real event.",
-        )
-        speed_columns[1].number_input(
-            "Custom Output Speed (1 is real time)",
-            key="speed_custom",
-            min_value=0.001,
-            step=0.05,
-            format="%.3f",
-            disabled=state.speed_choice != SpeedChoice.CUSTOM,
-        )
-        speed_hint = st.empty()
-        st.selectbox(
-            "Audio Panel",
-            audio_options,
-            key="audio_pick",
-            format_func=lambda panel_id: "No sound" if panel_id == NO_SOUND else panel_label(panel_id),
-            on_change=audio_was_chosen,
-            help="The one Panel whose sound is used. Sound from every other Panel is discarded. "
-            "The Output is silent during this Panel's Gaps.",
-        )
-        sound_hint = st.empty()
+        if grid:
+            speed_columns = st.columns(2)
+            speed_columns[0].selectbox(
+                "Output Speed",
+                list(SpeedChoice),
+                key="speed_choice",
+                format_func=lambda choice: choice.value,
+                help="How fast the Output shows the real event. Every Source is shown at this speed. "
+                "Slowest Source drops no frame of any Source for being too slow. The Output keeps "
+                "the same running time; a slower speed covers less of the real event.",
+            )
+            speed_columns[1].number_input(
+                "Custom Output Speed (1 is real time)",
+                key="speed_custom",
+                min_value=0.001,
+                step=0.05,
+                format="%.3f",
+                disabled=state.speed_choice != SpeedChoice.CUSTOM,
+            )
+            speed_hint = st.empty()
+            st.selectbox(
+                "Audio Panel",
+                audio_options,
+                key="audio_pick",
+                format_func=lambda panel_id: "No sound" if panel_id == NO_SOUND else panel_label(panel_id),
+                on_change=audio_was_chosen,
+                help="The one Panel whose sound is used. Sound from every other Panel is discarded. "
+                "The Output is silent during this Panel's Gaps.",
+            )
+            sound_hint = st.empty()
+        else:
+            st.caption(
+                "Each Source keeps its own sound while it is on show. A Source with no sound, "
+                "or whose Play Speed is not 1, is silent. The timing table says which."
+            )
         st.segmented_control(
             "Quality",
             list(Quality),
@@ -1012,7 +1229,8 @@ if state.get("project_path") and len(sized_panels) == len(panel_ids):
                 | kept[source_id]
                 for source_id in source_ids
             ],
-            shared={key: state[key] for key in project_file.SHARED_KEYS} | {"quality": quality},
+            shared={key: state[key] for key in project_file.SHARED_KEYS if key in state}
+            | {"quality": quality},
             panels=[
                 {
                     "row": state[f"pn_row_{panel_id}"],
@@ -1096,61 +1314,125 @@ with result:
             image_overlay=image_overlay,
         ),
         audio_panel=audio_panel,
+        workflow=state.workflow,
+        sequence=None if grid else SequenceSettings(state.seq_width, state.seq_height),
     )
-    if project.output.running_time <= 0:
+    if grid and project.output.running_time <= 0:
         st.error("Lead-in plus Lead-out must be greater than zero.", icon=":material/error:")
         st.stop()
 
     rate = output_rate(project, row_clips)
-    state.preview_offset = min(max(state.preview_offset, -state.lead_in), state.lead_out)
-    st.slider(
-        "Time from the Sync Event (s)",
-        key="preview_offset",
-        min_value=-float(state.lead_in),
-        max_value=float(state.lead_out),
-        step=1 / rate,
-        format="%.3f",
-        help="0 shows every Source at its Sync Point. Negative is before the Sync Event.",
-    )
-
-    try:
-        sizes = geometry(project, row_clips)
-        speed = speeds(project, row_clips)
-        hints = frame_hints(project, row_clips)
-        silent_because = silence_reason(project, row_clips)
-        frame = preview(project, row_clips, output_time=state.lead_in + state.preview_offset)
-        spans = [
-            span_of(clip, source, project, speed.output)
-            for clip, source in zip(row_clips, project.sources)
-        ]
-    except (EditError, ValueError) as error:
-        st.error(str(error), icon=":material/error:")
-        st.stop()
-    width, height = sizes.layout.width, sizes.layout.height
-
-    # What the speeds do, shown beside the settings that cause it.
-    running_time = project.output.running_time
-    speed_hint.caption(
-        f"Output Speed {speed.output:.3g}: the {running_time:.3f} s Output shows "
-        f"{running_time * speed.output:.3f} s of the real event."
-    )
-    for source_id, hint in zip(source_ids, hints):
-        frame_hint_slots[source_id].caption(
-            f"Frame Hint at Output Speed {speed.output:.3g} and Output Rate {rate:g}: {hint}."
-        )
-    if silent_because and audio_panel is not None:
-        sound_hint.warning(
-            f"The Output has no sound, because {silent_because}. Sound is kept only when "
-            "the Source in the Audio Panel and the Output Speed are both real time.",
-            icon=":material/volume_off:",
+    scaled = False
+    if grid:
+        state.preview_offset = min(max(state.preview_offset, -state.lead_in), state.lead_out)
+        st.slider(
+            "Time from the Sync Event (s)",
+            key="preview_offset",
+            min_value=-float(state.lead_in),
+            max_value=float(state.lead_out),
+            step=1 / rate,
+            format="%.3f",
+            help="0 shows every Source at its Sync Point. Negative is before the Sync Event.",
         )
 
-    # Each Panel's size in the Output, shown beside its typed size when they differ.
-    scaled = abs(sizes.layout.scale - 1) > 1e-9
-    for panel_id, box in zip(panel_ids, sizes.layout.boxes):
+        try:
+            sizes = geometry(project, row_clips)
+            speed = speeds(project, row_clips)
+            hints = frame_hints(project, row_clips)
+            silent_because = silence_reason(project, row_clips)
+            frame = preview(project, row_clips, output_time=state.lead_in + state.preview_offset)
+            spans = [
+                span_of(clip, source, project, speed.output)
+                for clip, source in zip(row_clips, project.sources)
+            ]
+        except (EditError, ValueError) as error:
+            st.error(str(error), icon=":material/error:")
+            st.stop()
+        width, height = sizes.layout.width, sizes.layout.height
+
+        # What the speeds do, shown beside the settings that cause it.
+        running_time = project.output.running_time
+        speed_hint.caption(
+            f"Output Speed {speed.output:.3g}: the {running_time:.3f} s Output shows "
+            f"{running_time * speed.output:.3f} s of the real event."
+        )
+        for source_id, hint in zip(source_ids, hints):
+            frame_hint_slots[source_id].caption(
+                f"Frame Hint at Output Speed {speed.output:.3g} and Output Rate {rate:g}: {hint}."
+            )
+        if silent_because and audio_panel is not None:
+            sound_hint.warning(
+                f"The Output has no sound, because {silent_because}. Sound is kept only when "
+                "the Source in the Audio Panel and the Output Speed are both real time.",
+                icon=":material/volume_off:",
+            )
+
+        # Each Panel's size in the Output, shown beside its typed size when they differ.
+        scaled = abs(sizes.layout.scale - 1) > 1e-9
+        for panel_id, box in zip(panel_ids, sizes.layout.boxes):
+            if scaled:
+                panel_hints[panel_id].caption(
+                    f"{box.width} by {box.height} pixels in the Output "
+                    f"({sizes.layout.scale:.0%} of the typed size)."
+                )
+    else:
+        try:
+            spans = sequence_spans(project, row_clips)
+            sizes = sequence_geometry(project, row_clips)
+            hints = sequence_frame_hints(project, row_clips)
+        except (EditError, ValueError) as error:
+            st.error(str(error), icon=":material/error:")
+            st.stop()
+        width, height = sizes.layout.width, sizes.layout.height
+        running_time = spans[-1].output_end
+        last_frame_time = max(0.0, running_time - 1 / rate)
+
+        # A step of a Start Point or End Point moves the Preview to it.
+        if focus := state.pop("seq_focus", None):
+            focus_id, which = focus
+            if focus_id in source_ids:
+                span = spans[source_ids.index(focus_id)]
+                state.seq_time = span.output_start if which == "start_point" else span.output_end - 1 / rate
+        state.seq_time = min(max(float(state.seq_time), 0.0), last_frame_time)
+        st.slider(
+            "Time in the Output (s)",
+            key="seq_time",
+            min_value=0.0,
+            max_value=max(last_frame_time, 1 / rate),
+            step=1 / rate,
+            format="%.3f",
+            help="The Preview shows the Source on show at this time, at the frame it shows then.",
+        )
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.caption("Go to the start of")
+            for source_id, span in zip(source_ids, spans):
+                st.button(
+                    f"Source {numbers[source_id]}",
+                    key=f"go_to_{source_id}",
+                    on_click=set_seq_time,
+                    args=(span.output_start,),
+                    type="tertiary",
+                )
+        try:
+            frame = sequence_preview(project, row_clips, state.seq_time)
+        except (EditError, ValueError) as error:
+            st.error(str(error), icon=":material/error:")
+            st.stop()
+        showing = source_ids[on_show(spans, state.seq_time)]
+
+        for source_id, source, span, hint in zip(source_ids, project.sources, spans, hints):
+            frame_hint_slots[source_id].caption(
+                f"Frame Hint at Play Speed {source.play_speed:g} and Output Rate {rate:g}: {hint}."
+            )
+            trim_hints[source_id].caption(
+                f"Plays {span.file_end - span.file_start:.3f} s of the file, from "
+                f"{span.file_start:.3f} to {span.file_end:.3f} s, for {span.time_on_show:.3f} s: "
+                f"from {span.output_start:.3f} to {span.output_end:.3f} s of the Output."
+            )
+        scaled = abs(sizes.layout.scale - 1) > 1e-9
         if scaled:
-            panel_hints[panel_id].caption(
-                f"{box.width} by {box.height} pixels in the Output "
+            sequence_hint.caption(
+                f"{width} by {height} pixels in the Output "
                 f"({sizes.layout.scale:.0%} of the typed size)."
             )
 
@@ -1161,11 +1443,15 @@ with result:
     for position, source_id in enumerate(source_ids):
         cropped_width, cropped_height = sizes.cropped[position]
         picture = sizes.pictures[position]
-        box = sizes.layout.boxes[panel_ids.index(panel_of(source_id))]
+        if grid:
+            box = sizes.layout.boxes[panel_ids.index(panel_of(source_id))]
+            panel_name = f"Panel {panel_numbers[panel_of(source_id)]}"
+        else:
+            box, panel_name = sizes.layout.boxes[0], "The Sequence Panel"
         typed_width = state[f"source_width_{source_id}"]
         hint = (
             f"After rotation and crop this Source is {cropped_width} by {cropped_height} pixels. "
-            f"Panel {panel_numbers[panel_of(source_id)]} is {box.width} by {box.height} pixels. "
+            f"{panel_name} is {box.width} by {box.height} pixels. "
         )
         hint += (
             "Fitted inside it"
@@ -1231,7 +1517,7 @@ with result:
 
     # One Source can be shown alone, at a larger size, to judge its Sync Point.
     shown = frame
-    if len(source_ids) > 1:
+    if grid and len(source_ids) > 1:
         show_options = ["all", *source_ids]
         if state.get("preview_show") not in show_options:
             state.preview_show = "all"
@@ -1250,143 +1536,173 @@ with result:
 
     with st.container(key="preview"):
         st.image(fit_within(shown, *PREVIEW_BOX), width="stretch")
-    sound = "no sound" if silent_because else f"sound from Panel {audio_panel + 1}"
-    row_count = len(sizes.layout.row_heights)
-    grid_shape = f", in {row_count} Rows" if row_count > 1 else ""
-    st.caption(
-        f"Output is {width} by {height} pixels{grid_shape} and runs for {running_time:.3f} s "
-        f"at {rate:g} frames per second, with {sound}. Output Speed {speed.output:.3g}."
-    )
-    st.table(
-        {
-            "Source": [source_label(source_id) for source_id in source_ids],
-            "Footage from (s)": [f"{span.file_start:.3f}" for span in spans],
-            "Footage to (s)": [f"{span.file_end:.3f}" for span in spans],
-            "Front Gap (s)": [f"{span.front_gap:.3f}" for span in spans],
-            "Back Gap (s)": [f"{span.back_gap:.3f}" for span in spans],
-            "Source Speed": [f"{own_speed:.3g}" for own_speed in speed.sources],
-            "Frame Hint": [str(hint) for hint in hints],
-        }
-    )
 
-    st.subheader("Draft")
-    # The Draft goes beside the Output, under the Output's name with "_draft" added.
-    draft_file = None
-    if state.out_folder.strip() and state.out_name.strip():
-        draft_file = Path(clean(state.out_folder)) / f"{Path(state.out_name.strip()).stem}_draft.mp4"
-    draft_columns = st.columns(4, vertical_alignment="bottom")
-    draft_columns[0].number_input(
-        "Draft Lead-in (s)",
-        key="draft_lead_in",
-        min_value=0.0,
-        step=0.5,
-        format="%.3f",
-        help="Draft running time from the start of the Draft to the Sync Event.",
-    )
-    draft_columns[1].number_input(
-        "Draft Lead-out (s)",
-        key="draft_lead_out",
-        min_value=0.0,
-        step=0.5,
-        format="%.3f",
-        help="Draft running time from the Sync Event to the end of the Draft.",
-    )
-    draft_columns[2].number_input(
-        "Draft width (px)",
-        key="draft_width",
-        min_value=16,
-        step=16,
-        help="The height follows from the picture. An Output narrower than this is not enlarged.",
-    )
-    draft_columns[3].checkbox(
-        "Draft sound", key="draft_sound", help="Carry the sound the Output would have."
-    )
-    draft_settings = DraftSettings(
-        lead_in=state.draft_lead_in,
-        lead_out=state.draft_lead_out,
-        width=state.draft_width,
-        sound=state.draft_sound,
-    )
-    small = None
-    try:
-        small = draft_project(project, row_clips, draft_settings)
-        draft_size = geometry(small, row_clips).layout
-        draft_silent = silence_reason(small, row_clips)
-    except EditError as error:
-        small = None
-        st.error(str(error), icon=":material/error:")
-    else:
-        draft_time = small.output.running_time
-        if not state.draft_sound:
-            draft_sound = "without sound"
-        elif draft_silent:
-            draft_sound = f"without sound, because {draft_silent}"
-        else:
-            draft_sound = f"with sound from Panel {audio_panel + 1}"
+    if not grid:
+        span = spans[source_ids.index(showing)]
+        file_time = span.file_time_at(min(state.seq_time, span.output_end))
         st.caption(
-            f"The Draft will be {draft_size.width} by {draft_size.height} pixels "
-            f"({draft_size.width / width:.0%} of the Output's size) at low picture quality, "
-            f"{draft_sound}. It runs for {draft_time:.3f} s at {rate:g} frames per second and "
-            f"Output Speed {speed.output:.3g}, with the Sync Event {state.draft_lead_in:.3f} s in."
+            f"Output is {width} by {height} pixels and runs for {running_time:.3f} s at {rate:g} "
+            f"frames per second. At {state.seq_time:.3f} s it shows {source_label(showing)}, "
+            f"at {file_time:.3f} s into its file."
+        )
+        sounds = [
+            sequence_silence_reason(clip, source) for clip, source in zip(row_clips, project.sources)
+        ]
+        st.table(
+            {
+                "Source": [source_label(source_id) for source_id in source_ids],
+                "On show from (s)": [f"{span.output_start:.3f}" for span in spans],
+                "On show to (s)": [f"{span.output_end:.3f}" for span in spans],
+                "Time on show (s)": [f"{span.time_on_show:.3f}" for span in spans],
+                "File from (s)": [f"{span.file_start:.3f}" for span in spans],
+                "File to (s)": [f"{span.file_end:.3f}" for span in spans],
+                "Play Speed": [f"{source.play_speed:g}" for source in project.sources],
+                "Frame Hint": [str(hint) for hint in hints],
+                "Sound": ["yes" if reason is None else f"no: {reason}" for reason in sounds],
+            }
+        )
+        st.caption(
+            f"Total running time {running_time:.3f} s: the times on show added together."
         )
 
-    draft_problem = None
-    if draft_file is None:
-        draft_problem = "Choose an Output folder and file name. The Draft is written beside the Output."
-    elif any(draft_file.resolve() == Path(path).resolve() for path in paths.values()):
-        draft_problem = f"The Draft would replace the Source file {draft_file.name}."
-    if draft_problem:
-        st.warning(draft_problem, icon=":material/warning:")
-    elif small is not None:
-        st.caption(f"It is written to {draft_file}, replacing the Draft before it.")
+    if grid:
+        sound = "no sound" if silent_because else f"sound from Panel {audio_panel + 1}"
+        row_count = len(sizes.layout.row_heights)
+        grid_shape = f", in {row_count} Rows" if row_count > 1 else ""
+        st.caption(
+            f"Output is {width} by {height} pixels{grid_shape} and runs for {running_time:.3f} s "
+            f"at {rate:g} frames per second, with {sound}. Output Speed {speed.output:.3g}."
+        )
+        st.table(
+            {
+                "Source": [source_label(source_id) for source_id in source_ids],
+                "Footage from (s)": [f"{span.file_start:.3f}" for span in spans],
+                "Footage to (s)": [f"{span.file_end:.3f}" for span in spans],
+                "Front Gap (s)": [f"{span.front_gap:.3f}" for span in spans],
+                "Back Gap (s)": [f"{span.back_gap:.3f}" for span in spans],
+                "Source Speed": [f"{own_speed:.3g}" for own_speed in speed.sources],
+                "Frame Hint": [str(hint) for hint in hints],
+            }
+        )
 
-    if st.button(
-        "Make Draft",
-        icon=":material/play_circle:",
-        key="make_draft",
-        disabled=small is None or bool(draft_problem),
-    ):
-        bar = st.progress(0.0, text="Starting")
-        started = time.perf_counter()
+        st.subheader("Draft")
+        # The Draft goes beside the Output, under the Output's name with "_draft" added.
+        draft_file = None
+        if state.out_folder.strip() and state.out_name.strip():
+            draft_file = Path(clean(state.out_folder)) / f"{Path(state.out_name.strip()).stem}_draft.mp4"
+        draft_columns = st.columns(4, vertical_alignment="bottom")
+        draft_columns[0].number_input(
+            "Draft Lead-in (s)",
+            key="draft_lead_in",
+            min_value=0.0,
+            step=0.5,
+            format="%.3f",
+            help="Draft running time from the start of the Draft to the Sync Event.",
+        )
+        draft_columns[1].number_input(
+            "Draft Lead-out (s)",
+            key="draft_lead_out",
+            min_value=0.0,
+            step=0.5,
+            format="%.3f",
+            help="Draft running time from the Sync Event to the end of the Draft.",
+        )
+        draft_columns[2].number_input(
+            "Draft width (px)",
+            key="draft_width",
+            min_value=16,
+            step=16,
+            help="The height follows from the picture. An Output narrower than this is not enlarged.",
+        )
+        draft_columns[3].checkbox(
+            "Draft sound", key="draft_sound", help="Carry the sound the Output would have."
+        )
+        draft_settings = DraftSettings(
+            lead_in=state.draft_lead_in,
+            lead_out=state.draft_lead_out,
+            width=state.draft_width,
+            sound=state.draft_sound,
+        )
+        small = None
         try:
-            # Separate readers, so the cached Preview readers are left alone.
-            with ExitStack() as readers:
-                fresh_clips = [
-                    readers.enter_context(open_source(source.path)) for source in project.sources
-                ]
-                render_draft(
-                    project,
-                    fresh_clips,
-                    draft_file,
-                    draft_settings,
-                    on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
-                )
-        except (EditError, OSError) as error:
-            bar.empty()
-            st.error(f"The Draft failed: {error}", icon=":material/error:")
-            st.stop()
-        bar.empty()
-        state.draft = {
-            "project": small,
-            "path": str(draft_file),
-            "seconds": time.perf_counter() - started,
-        }
-
-    if state.draft and Path(state.draft["path"]).is_file():
-        st.success(
-            f"Draft written to {state.draft['path']} in {state.draft['seconds']:.1f} s",
-            icon=":material/check_circle:",
-        )
-        if state.draft["project"] != small:
-            st.warning(
-                "Settings have changed since this Draft was made. Make it again to see them.",
-                icon=":material/warning:",
+            small = draft_project(project, row_clips, draft_settings)
+            draft_size = geometry(small, row_clips).layout
+            draft_silent = silence_reason(small, row_clips)
+        except EditError as error:
+            small = None
+            st.error(str(error), icon=":material/error:")
+        else:
+            draft_time = small.output.running_time
+            if not state.draft_sound:
+                draft_sound = "without sound"
+            elif draft_silent:
+                draft_sound = f"without sound, because {draft_silent}"
+            else:
+                draft_sound = f"with sound from Panel {audio_panel + 1}"
+            st.caption(
+                f"The Draft will be {draft_size.width} by {draft_size.height} pixels "
+                f"({draft_size.width / width:.0%} of the Output's size) at low picture quality, "
+                f"{draft_sound}. It runs for {draft_time:.3f} s at {rate:g} frames per second and "
+                f"Output Speed {speed.output:.3g}, with the Sync Event {state.draft_lead_in:.3f} s in."
             )
-        if st.button("Open Draft", icon=":material/open_in_new:", key="open_draft"):
+
+        draft_problem = None
+        if draft_file is None:
+            draft_problem = "Choose an Output folder and file name. The Draft is written beside the Output."
+        elif any(draft_file.resolve() == Path(path).resolve() for path in paths.values()):
+            draft_problem = f"The Draft would replace the Source file {draft_file.name}."
+        if draft_problem:
+            st.warning(draft_problem, icon=":material/warning:")
+        elif small is not None:
+            st.caption(f"It is written to {draft_file}, replacing the Draft before it.")
+
+        if st.button(
+            "Make Draft",
+            icon=":material/play_circle:",
+            key="make_draft",
+            disabled=small is None or bool(draft_problem),
+        ):
+            bar = st.progress(0.0, text="Starting")
+            started = time.perf_counter()
             try:
-                dialogs.open_file(state.draft["path"])
-            except OSError as error:
-                st.error(f"The Draft could not be opened: {error}", icon=":material/error:")
+                # Separate readers, so the cached Preview readers are left alone.
+                with ExitStack() as readers:
+                    fresh_clips = [
+                        readers.enter_context(open_source(source.path)) for source in project.sources
+                    ]
+                    render_draft(
+                        project,
+                        fresh_clips,
+                        draft_file,
+                        draft_settings,
+                        on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
+                    )
+            except (EditError, OSError) as error:
+                bar.empty()
+                st.error(f"The Draft failed: {error}", icon=":material/error:")
+                st.stop()
+            bar.empty()
+            state.draft = {
+                "project": small,
+                "path": str(draft_file),
+                "seconds": time.perf_counter() - started,
+            }
+
+        if state.draft and Path(state.draft["path"]).is_file():
+            st.success(
+                f"Draft written to {state.draft['path']} in {state.draft['seconds']:.1f} s",
+                icon=":material/check_circle:",
+            )
+            if state.draft["project"] != small:
+                st.warning(
+                    "Settings have changed since this Draft was made. Make it again to see them.",
+                    icon=":material/warning:",
+                )
+            if st.button("Open Draft", icon=":material/open_in_new:", key="open_draft"):
+                try:
+                    dialogs.open_file(state.draft["path"])
+                except OSError as error:
+                    st.error(f"The Draft could not be opened: {error}", icon=":material/error:")
 
     st.subheader("Render")
     destination = Path(clean(state.out_folder)) / state.out_name.strip()
@@ -1399,7 +1715,7 @@ with result:
         problem = "The Output cannot replace its own Source file."
     if problem:
         st.warning(problem, icon=":material/warning:")
-    if empty_panels():
+    if grid and empty_panels():
         st.info(
             " and ".join(f"Panel {panel_numbers[panel_id]}" for panel_id in empty_panels())
             + (" is empty and is" if len(empty_panels()) == 1 else " are empty and are")

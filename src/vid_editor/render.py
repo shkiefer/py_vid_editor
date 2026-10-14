@@ -21,8 +21,18 @@ from proglog import ProgressBarLogger
 
 from vid_editor.layout import Layout, Picture, even, panel_layout, picture_in, width_for_height
 from vid_editor.legacy_layout import grid_layout
-from vid_editor.model import Crop, DraftSettings, EditError, Panel, Project, Quality, Source
+from vid_editor.model import (
+    Crop,
+    DraftSettings,
+    EditError,
+    Panel,
+    Project,
+    Quality,
+    Source,
+    Workflow,
+)
 from vid_editor.overlays import overlay_patches, stamper
+from vid_editor.sequence import ClipSpan, clip_spans, on_show
 from vid_editor.timing import (
     FrameHint,
     SourceSpan,
@@ -588,6 +598,122 @@ def preview(
     return frame
 
 
+def sequence_spans(project: Project, clips: Sequence[VideoFileClip]) -> tuple[ClipSpan, ...]:
+    """Each Source's place in a Sequence's running time, in play order."""
+    return clip_spans(project.sources, [float(clip.duration) for clip in clips])
+
+
+def sequence_geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
+    """Where every Source of a Sequence sits in its one Panel. No frame is read."""
+    if not project.sources:
+        raise EditError("The Output needs at least one Source")
+    if len(project.sources) != len(clips):
+        raise ValueError("Each Source needs its own opened file")
+    if project.sequence is None:
+        raise EditError("The Sequence has no Panel size")
+    size = (project.sequence.width, project.sequence.height)
+    try:
+        layout = panel_layout([(*size, 1)], project.output.width)
+    except ValueError as error:
+        raise EditError(str(error)) from error
+    cropped, pictures = [], []
+    for position, (clip, source) in enumerate(zip(clips, project.sources)):
+        try:
+            own = source_sizes((int(clip.w), int(clip.h)), source)[0]
+        except EditError as error:
+            raise _named(error, position, project) from error
+        cropped.append(own)
+        pictures.append(picture_in(layout.boxes[0], size, layout.scale, own, source.width))
+    return Geometry(tuple(cropped), layout, tuple(pictures))
+
+
+def sequence_frame_hints(project: Project, clips: Sequence[VideoFileClip]) -> list[FrameHint]:
+    """The Frame Hint of every Source of a Sequence at its Play Speed."""
+    sequence_spans(project, clips)  # checks every Play Speed
+    rate = output_rate(project, clips)
+    return [
+        frame_hint(
+            playback_rate=float(clip.fps),
+            source_speed=1 / source.play_speed,
+            output_speed=1.0,
+            output_rate=rate,
+        )
+        for clip, source in zip(clips, project.sources)
+    ]
+
+
+def sequence_silence_reason(clip: VideoFileClip, source: Source) -> str | None:
+    """Why a Source is silent in a Sequence, or None when its sound is kept."""
+    if clip.audio is None:
+        return "the file has no sound"
+    if not is_real_time(source.play_speed):
+        return f"its Play Speed is {source.play_speed:.3g}, not 1"
+    return None
+
+
+def build_sequence(
+    project: Project, clips: Sequence[VideoFileClip], rough: bool = False
+) -> VideoClip:
+    """Compose a whole Sequence: each Source in turn, in play order."""
+    sizes = sequence_geometry(project, clips)
+    layout, pictures = sizes.layout, sizes.pictures
+    spans = sequence_spans(project, clips)
+
+    pieces = []
+    for clip, source, picture, span in zip(clips, project.sources, pictures, spans):
+        size = (picture.width, picture.height)
+        piece = clip.subclipped(span.file_start, span.file_end)
+        if not _is_untouched(clip, source, size):
+            piece = piece.image_transform(
+                lambda frame, source=source, size=size: edit_frame(frame, source, size, rough)
+            )
+        if not is_real_time(source.play_speed):
+            # Sound never survives a change of speed, so it is not carried through one.
+            piece = piece.without_audio().with_effects(
+                [vfx.MultiplySpeed(factor=source.play_speed)]
+            )
+        if not _fills_the_output(layout, [picture]):
+            sound = piece.audio
+            piece = VideoClip(
+                frame_function=lambda t, piece=piece, picture=picture: _composed(
+                    layout, [picture], [piece.get_frame(t)]
+                ),
+                duration=span.time_on_show,
+            )
+            if sound is not None:
+                piece = piece.with_audio(sound)
+        pieces.append(piece.with_duration(span.time_on_show))
+
+    output = pieces[0] if len(pieces) == 1 else concatenate_videoclips(pieces, method="chain")
+    patches = overlay_patches(project.output, layout.width)
+    if patches:
+        output = output.image_transform(stamper(patches, (layout.width, layout.height)))
+    return output.with_fps(output_rate(project, clips))
+
+
+def sequence_preview(
+    project: Project, clips: Sequence[VideoFileClip], output_time: float
+) -> np.ndarray:
+    """The Preview of a Sequence: the frame of the Source on show at a running time."""
+    sizes = sequence_geometry(project, clips)
+    layout, pictures = sizes.layout, sizes.pictures
+    spans = sequence_spans(project, clips)
+    last_frame_time = max(0.0, spans[-1].output_end - 1 / output_rate(project, clips))
+    output_time = min(max(output_time, 0.0), last_frame_time)
+    position = on_show(spans, output_time)
+    clip, source, picture, span = (
+        clips[position], project.sources[position], pictures[position], spans[position]
+    )
+    file_time = min(span.file_time_at(output_time), span.file_end - 0.5 / float(clip.fps))
+    frame = edit_frame(source_frame(clip, file_time), source, (picture.width, picture.height))
+    if not _fills_the_output(layout, [picture]):
+        frame = _composed(layout, [picture], [frame])
+    patches = overlay_patches(project.output, layout.width)
+    if patches:
+        frame = stamper(patches, (layout.width, layout.height))(frame)
+    return frame
+
+
 def fit_within(frame: np.ndarray, max_width: int, max_height: int) -> np.ndarray:
     """Shrink a frame to fit a box without distortion. A frame that fits is left alone."""
     height, width = frame.shape[:2]
@@ -643,9 +769,11 @@ def render(
     destination = Path(destination)
     if destination.suffix.lower() != ".mp4":
         raise EditError("The Output file name must end in .mp4")
-    return _write(
-        build_output(project, clips), destination, "medium", _CRF[project.output.quality], on_progress
-    )
+    if project.workflow is Workflow.SEQUENCE:
+        output = build_sequence(project, clips)
+    else:
+        output = build_output(project, clips)
+    return _write(output, destination, "medium", _CRF[project.output.quality], on_progress)
 
 
 def draft_project(

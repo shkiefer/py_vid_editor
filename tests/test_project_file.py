@@ -5,7 +5,7 @@ import json
 import pytest
 
 from vid_editor import project_file
-from vid_editor.model import Corner, EditError, Quality, SpeedChoice
+from vid_editor.model import Corner, EditError, Quality, SpeedChoice, Workflow
 from vid_editor.project_file import ProjectSettings
 
 SOURCE = {
@@ -22,8 +22,14 @@ SOURCE = {
     "aspect_on": False,
     "aspect_width": 1920,
     "aspect_height": 1080,
+    "start_point": 0.5,
+    "end_point": None,
+    "play_speed": 1.0,
 }
 SHARED = {
+    "workflow": Workflow.SEQUENCE,
+    "seq_width": 1920,
+    "seq_height": 1080,
     "lead_in": 1.0,
     "lead_out": 3.0,
     "out_width": 960,
@@ -74,7 +80,11 @@ def test_settings_survive_being_saved_and_opened(tmp_path):
 
 def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     document = json.loads(project_file.dumps(SETTINGS))
-    assert document["format"] == 3
+    assert document["format"] == 4
+    assert document["workflow"] == "Sequence"
+    assert document["sequence"] == {"width": 1920, "height": 1080}
+    assert document["sources"][0]["start_point"] == 0.5
+    assert document["sources"][0]["end_point"] is None
     assert [source["sync_point"] for source in document["sources"]] == [2.5, 0.75]
     assert document["sources"][0]["crop"] == {"top": 10, "bottom": 0, "left": 20, "right": 0}
     assert document["panels"][2] == {"row": 2, "width": 2528, "height": 360}
@@ -105,6 +115,26 @@ def test_a_file_from_before_a_setting_existed_still_opens():
     assert "image_path" not in settings.shared and "source_width" not in settings.sources[0]
     assert settings.sources[0]["sync_point"] == 2.5
     assert settings.audio_panel == 0
+
+
+def test_a_format_3_file_opens_with_no_workflow_or_sequence_settings():
+    document = json.loads(project_file.dumps(SETTINGS))
+    document["format"] = 3
+    for key in ("workflow", "sequence"):
+        document.pop(key)
+    for source in document["sources"]:
+        for key in ("start_point", "end_point", "play_speed"):
+            source.pop(key)
+    settings = project_file.loads(json.dumps(document))
+    assert not {"workflow", "seq_width", "seq_height"} & set(settings.shared)
+    assert "start_point" not in settings.sources[0]
+    assert settings.panels == PANELS
+
+
+def test_an_unknown_workflow_is_refused():
+    document = json.loads(project_file.dumps(SETTINGS)) | {"workflow": "Montage"}
+    with pytest.raises(EditError, match="value for workflow"):
+        project_file.loads(json.dumps(document))
 
 
 def test_a_setting_that_is_not_given_is_left_out_of_the_file():

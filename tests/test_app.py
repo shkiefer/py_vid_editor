@@ -12,6 +12,7 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from vid_editor import dialogs
+from vid_editor.model import Workflow
 
 APP = str(Path(__file__).parent.parent / "streamlit_app.py")
 
@@ -292,7 +293,7 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
     app = open_app(source_path)
     app.number_input(key="sync_point_1").set_value(1.5).run()
     save_project_as(app, project, monkeypatch)
-    assert saved(project)["format"] == 3 and saved(project)["audio_panel"] == 1
+    assert saved(project)["format"] == 4 and saved(project)["audio_panel"] == 1
     assert saved(project)["panels"] == [{"row": 1, "width": 160, "height": 120}]
     assert saved(project)["sources"][0] | {"crop": None, "aspect_override": None} == {
         "path": source_path,
@@ -303,7 +304,12 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
         "record_rate": None,
         "panel": 1,
         "aspect_override": None,
+        "start_point": 0.0,
+        "end_point": None,
+        "play_speed": 1.0,
     }
+    assert saved(project)["workflow"] == "Synced grid"
+    assert saved(project)["sequence"] == {"width": 160, "height": 120}
     assert any(f"Project file: {project}" in caption.value for caption in app.caption)
 
     app.number_input(key="crop_left_1").set_value(20)
@@ -928,4 +934,136 @@ def test_a_project_from_before_typed_panels_opens_with_the_same_output(
     assert app.number_input(key="source_width_1").value == 80
     assert app.number_input(key="source_width_2").value is None
     assert "with sound from Panel 1" in captions(app)
-    assert saved(project)["format"] == 3 and len(saved(project)["panels"]) == 2
+    assert saved(project)["format"] == 4 and len(saved(project)["panels"]) == 2
+
+
+# ------------------------------------------------------------------- Sequence
+
+
+def workflow_switch(app: AppTest):
+    return next(control for control in app.button_group if control.key == "workflow")
+
+
+def as_sequence(app: AppTest) -> AppTest:
+    workflow_switch(app).set_value(Workflow.SEQUENCE).run()
+    assert not app.exception
+    return app
+
+
+SEQUENCE_TIMING = ["On show from (s)", "On show to (s)", "Time on show (s)", "Sound"]
+
+
+def sequence_row(app: AppTest, number: int = 1) -> list:
+    return app.table[0].value.iloc[number - 1][SEQUENCE_TIMING].to_list()
+
+
+def test_a_sequence_plays_its_sources_one_after_another(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    # 4 s, then 2 s, in the 160 by 120 Panel the first Source started.
+    assert sequence_row(app, 1) == ["0.000", "4.000", "4.000", "yes"]
+    assert sequence_row(app, 2) == ["4.000", "6.000", "2.000", "no: the file has no sound"]
+    assert "Output is 160 by 120 pixels and runs for 6.000 s" in captions(app)
+    assert "Total running time 6.000 s" in captions(app)
+    # The grid's settings are not on show.
+    keys = {widget.key for widget in app.number_input}
+    assert not {"sync_point_1", "record_rate_1", "lead_in", "pn_width_1"} & keys
+    assert {"start_point_1", "end_point_1", "play_speed_1", "seq_width"} <= keys
+
+
+def test_trims_and_play_speed_set_each_time_on_show(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.number_input(key="start_point_1").set_value(1.0)
+    app.number_input(key="end_point_1").set_value(3.0)
+    app.number_input(key="play_speed_2").set_value(0.5).run()
+    assert sequence_row(app, 1) == ["0.000", "2.000", "2.000", "yes"]
+    assert sequence_row(app, 2) == [
+        "2.000",
+        "6.000",
+        "4.000",
+        "no: the file has no sound",
+    ]
+    assert "Plays 2.000 s of the file, from 1.000 to 3.000 s, for 2.000 s" in captions(app)
+    app.number_input(key="play_speed_1").set_value(2.0).run()
+    assert sequence_row(app, 1)[2:] == ["1.000", "no: its Play Speed is 2, not 1"]
+
+
+def test_an_end_point_before_the_start_point_is_reported(source_path):
+    app = as_sequence(open_app(source_path))
+    app.number_input(key="start_point_1").set_value(3.0)
+    app.number_input(key="end_point_1").set_value(2.0).run()
+    assert "Start Point must be before the End Point" in app.error[0].value
+
+
+def test_sources_move_earlier_and_later_in_the_play_order(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    assert app.button(key="earlier_1").disabled and app.button(key="later_2").disabled
+    app.button(key="later_1").click().run()
+    assert app.session_state["source_ids"] == [2, 1]
+    assert sequence_row(app, 1)[:3] == ["0.000", "2.000", "2.000"]
+
+
+def test_stepping_a_start_point_moves_the_preview_to_it(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.button(key="step_start_point_forward_1_2").click().run()
+    assert app.number_input(key="start_point_2").value == pytest.approx(0.051)
+    assert app.slider(key="seq_time").value == pytest.approx(4.0)
+    app.button(key="go_to_1").click().run()
+    assert app.slider(key="seq_time").value == 0
+
+
+def test_the_sequence_panel_sets_the_output_and_the_scale_buttons(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.number_input(key="seq_width").set_value(100)
+    app.number_input(key="seq_height").set_value(100).run()
+    assert "Output is 100 by 100 pixels" in captions(app)
+    app.button(key="scale_height_2").click().run()
+    # The 100 by 200 Source scaled to the Panel's height of 100 is 50 wide.
+    assert app.number_input(key="source_width_2").value == 50
+
+
+def test_switching_back_to_the_grid_keeps_its_settings(source_path, tall_source_path):
+    app = open_app(source_path, tall_source_path)
+    app.number_input(key="sync_point_1").set_value(1.5)
+    app.number_input(key="lead_in").set_value(0.5)
+    app.number_input(key="pn_height_2").set_value(60).run()
+    as_sequence(app)
+    app.number_input(key="start_point_1").set_value(1.0).run()
+    app.number_input(key="play_speed_1").set_value(0.5).run()
+    workflow_switch(app).set_value(Workflow.GRID).run()
+    assert not app.exception
+    assert app.number_input(key="sync_point_1").value == 1.5
+    assert app.number_input(key="lead_in").value == 0.5
+    assert app.number_input(key="pn_height_2").value == 60
+    as_sequence(app)
+    assert app.number_input(key="start_point_1").value == 1.0
+    assert app.number_input(key="play_speed_1").value == 0.5
+
+
+def test_a_sequence_project_is_saved_and_opens_as_a_sequence(
+    source_path, tall_source_path, tmp_path, monkeypatch
+):
+    project = tmp_path / "sequence.json"
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.number_input(key="end_point_1").set_value(2.5).run()
+    save_project_as(app, project, monkeypatch)
+    assert saved(project)["workflow"] == "Sequence"
+    assert saved(project)["sources"][0]["end_point"] == 2.5
+
+    again = open_app()
+    open_project(again, project, monkeypatch)
+    assert workflow_switch(again).value == Workflow.SEQUENCE
+    assert again.number_input(key="end_point_1").value == 2.5
+    assert "runs for 4.500 s" in captions(again)
+
+
+def test_a_rendered_sequence_is_written(source_path, tall_source_path, tmp_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.number_input(key="start_point_1").set_value(3.0)
+    app.text_input(key="out_folder").set_value(str(tmp_path))
+    app.text_input(key="out_name").set_value("sequence.mp4").run()
+    assert not [button for button in app.button if button.key == "make_draft"]
+    app.button(key="render").click().run()
+    assert not app.exception
+    with VideoFileClip(str(tmp_path / "sequence.mp4")) as output:
+        assert output.duration == pytest.approx(3.0, abs=0.15)
+        assert file_time_shown(output.get_frame(0.5)) == pytest.approx(3.5, abs=0.15)

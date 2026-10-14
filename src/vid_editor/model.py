@@ -24,6 +24,13 @@ class SpeedChoice(Enum):
     CUSTOM = "Custom"
 
 
+class Workflow(Enum):
+    """What a Project makes of its Sources."""
+
+    GRID = "Synced grid"
+    SEQUENCE = "Sequence"
+
+
 class Corner(Enum):
     """The corner of the Output an Overlay sits in."""
 
@@ -94,6 +101,13 @@ class Source:
     which makes the Source real time."""
     panel: int = 0
     """Position in the Project's `panels` of the Panel the Source is assigned to."""
+    start_point: float = 0.0
+    """In a Sequence, the file time before which none of the Source is used."""
+    end_point: float | None = None
+    """In a Sequence, the file time after which none of the Source is used.
+    None is the end of the file."""
+    play_speed: float = 1.0
+    """In a Sequence, how much faster than its file the Source is played."""
 
 
 @dataclass(frozen=True)
@@ -146,14 +160,27 @@ class Panel:
 
 
 @dataclass(frozen=True)
+class SequenceSettings:
+    """What belongs to a Sequence as a whole."""
+
+    width: int
+    """Width of the Sequence's one Panel, in typed pixels."""
+    height: int
+    """Height of the Sequence's one Panel, in typed pixels."""
+
+
+@dataclass(frozen=True)
 class Project:
     """The Panels, Sources and settings that produce one Output."""
 
     sources: tuple[Source, ...]
-    """In the order added."""
+    """In the order added, which in a Sequence is the play order."""
     output: OutputSettings
     panels: tuple[Panel, ...]
     """In their listed order, which is left to right within each Row. A Panel
     that no Source is assigned to is empty, and black."""
     audio_panel: int | None = 0
     """Position in `panels` of the Audio Panel. None gives an Output with no sound."""
+    workflow: Workflow = Workflow.GRID
+    sequence: SequenceSettings | None = None
+    """The Sequence's settings; needed only when the workflow is a Sequence."""

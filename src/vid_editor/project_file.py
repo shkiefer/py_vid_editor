@@ -13,12 +13,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from vid_editor.model import Corner, EditError, Quality, SpeedChoice
+from vid_editor.model import Corner, EditError, Quality, SpeedChoice, Workflow
 
-FORMAT = 3
+FORMAT = 4
 # Format 1 held one Source and had no Audio Source. Format 2 held several, each
-# with a Row, and the Sources set the sizes. Format 3 lists its Panels.
-_READABLE_FORMATS = (1, 2, 3)
+# with a Row, and the Sources set the sizes. Format 3 lists its Panels. Format 4
+# adds the workflow and the Sequence's settings; a file without them is a
+# Synced grid.
+_READABLE_FORMATS = (1, 2, 3, 4)
 _FIRST_FORMAT_WITH_PANELS = 3
 EXTENSION = ".json"
 
@@ -64,6 +66,9 @@ _SOURCE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
     ("aspect_on", "aspect_override.on", _switch),
     ("aspect_width", "aspect_override.width", _number(int, 2)),
     ("aspect_height", "aspect_override.height", _number(int, 2)),
+    ("start_point", "start_point", _number(float, 0)),
+    ("end_point", "end_point", _optional(_number(float, 0))),
+    ("play_speed", "play_speed", _number(float, 0.001)),
 )
 
 # What each entry of "panels" holds.
@@ -75,8 +80,12 @@ _PANEL_FIELDS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
 PANEL_KEYS = tuple(key for key, _ in _PANEL_FIELDS)
 """The settings each Panel has."""
 
-# Shared setting, section of the file, name within the section, reader.
+# Shared setting, section of the file, name within the section, reader. The
+# section "" is the top level of the file.
 _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
+    ("workflow", "", "workflow", Workflow),
+    ("seq_width", "sequence", "width", _number(int, 2)),
+    ("seq_height", "sequence", "height", _number(int, 2)),
     ("lead_in", "output", "lead_in", _number(float, 0)),
     ("lead_out", "output", "lead_out", _number(float, 0)),
     ("out_width", "output", "width", _optional(_number(int, 2))),
@@ -100,7 +109,7 @@ _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
     ("draft_width", "draft", "width", _number(int, 2)),
     ("draft_sound", "draft", "sound", _switch),
 )
-_SHARED_SECTIONS = ("output", "text_overlay", "image_overlay", "draft")
+_SHARED_SECTIONS = ("", "sequence", "output", "text_overlay", "image_overlay", "draft")
 
 SOURCE_KEYS = tuple(key for key, *_ in _SOURCE_FIELDS if key != "path")
 """The settings each Source has, besides its path."""
@@ -167,8 +176,10 @@ def dumps(settings: ProjectSettings) -> str:
     for key, section, name, _ in _SHARED_FIELDS:
         if key in settings.shared:
             _put(sections[section], name, settings.shared[key])
+    top = sections.pop("")
     document = {
         "format": FORMAT,
+        **top,
         "panels": [{key: panel[key] for key in PANEL_KEYS} for panel in settings.panels or []],
         "sources": sources,
         "audio_panel": None if settings.audio_panel is None else settings.audio_panel + 1,
@@ -241,9 +252,10 @@ def loads(text: str, name: str = "This file") -> ProjectSettings:
 
     shared = {}
     for key, section, field_name, read in _SHARED_FIELDS:
-        shown = f"{section}.{field_name}".replace("_", " ")
+        shown = (f"{section}.{field_name}" if section else field_name).replace("_", " ")
+        place = document if not section else document.get(section, {})
         try:
-            shared[key] = _read(document.get(section, {}), field_name, read, shown, name)
+            shared[key] = _read(place, field_name, read, shown, name)
         except KeyError:
             continue
 
