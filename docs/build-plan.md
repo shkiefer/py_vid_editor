@@ -15,7 +15,7 @@ Each slice ends with something runnable.
 7. **Speed** (done) — Record Rate, Output Speed, Output Rate, Frame Hint.
 8. **Draft render** (done) — a quick, small render around the Sync Event, written beside the Output.
 9. **Column, then grid** (done) — width matching, Bars, Crop Hint.
-10. **Layout of typed Panels** (built, awaiting verification) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
+10. **Layout of typed Panels** (done) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
 11. **Sequences** — several Sources in one Panel, play order, the Anchor, Start Point and End Point, and sound that follows the Source on show.
 12. **Transitions** — a fade from black at the start and to black at the end of a Source, each with its own length. No crossfade.
 
