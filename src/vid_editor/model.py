@@ -31,6 +31,14 @@ class Workflow(Enum):
     SEQUENCE = "Sequence"
 
 
+class JoinKind(Enum):
+    """What happens where one Source of a Sequence hands over to the next."""
+
+    CUT = "Cut"
+    BLACK = "Fade through black"
+    CROSSFADE = "Crossfade"
+
+
 class Corner(Enum):
     """The corner of the Output an Overlay sits in."""
 
@@ -108,6 +116,19 @@ class Source:
     None is the end of the file."""
     play_speed: float = 1.0
     """In a Sequence, how much faster than its file the Source is played."""
+    join: "Transition" = field(default_factory=lambda: Transition())
+    """In a Sequence, the Transition at the Join after this Source. The last
+    Source's is not used."""
+
+
+@dataclass(frozen=True)
+class Transition:
+    """What happens at a Join, and over how many seconds of Output running time."""
+
+    kind: JoinKind = JoinKind.CUT
+    length: float = 1.0
+    """Not used by a cut. A fade through black spends half of it fading out
+    and half fading in; a crossfade overlaps the two Sources by all of it."""
 
 
 @dataclass(frozen=True)
@@ -167,6 +188,10 @@ class SequenceSettings:
     """Width of the Sequence's one Panel, in typed pixels."""
     height: int
     """Height of the Sequence's one Panel, in typed pixels."""
+    fade_in: float = 0.0
+    """Seconds of fade from black at the very start of the Sequence."""
+    fade_out: float = 0.0
+    """Seconds of fade to black at the very end of the Sequence."""
 
 
 @dataclass(frozen=True)

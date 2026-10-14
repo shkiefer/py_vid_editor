@@ -27,7 +27,7 @@ In a **Synced grid**, the one **Panel** whose sound is used in the **Output**, t
 _Avoid_: Audio Source, audio track, sound file, master audio
 
 **Draft**:
-A small, low-quality render of a stretch of the **Output** around the **Sync Event**, made only for checking it in motion.
+A small, low-quality render of a stretch of the **Output**, made only for checking it in motion: around the **Sync Event** in a **Synced grid**, or around a chosen **Join** (or the start) in a **Sequence**.
 _Avoid_: Preview video, proxy, test render
 
 **Synced grid**:
@@ -203,7 +203,9 @@ _Avoid_: Padding, filler, freeze
 - Each **Source** in a **Sequence** has a **Start Point**, an **End Point** and a **Play Speed**; it shows its file from **Start Point** to **End Point**, so its time on show is that stretch divided by its **Play Speed**
 - **Start Point** and **End Point** are file times, so on a **Source** whose **Play Speed** is not 1 they are not **Output** running time
 - The **Output** running time of a **Sequence** is the sum of its **Sources**' times on show, less the length of every crossfade
-- A fade through black leaves the running time as it is; a crossfade overlaps the two **Sources** it joins by its length, so the running time is shorter by that much
+- A fade through black leaves the running time as it is, spending half its length fading the earlier **Source** out and half fading the later one in; a crossfade overlaps the two **Sources** it joins by its length, so the running time is shorter by that much
+- Each **Source**'s setting for the **Join** after it goes with it when the play order changes; the last **Source**'s is not used
+- A **Source**'s **Transitions** together are no longer than its time on show
 - A crossfade is no longer than the time on show of either **Source** it joins
 - Each **Source** in a **Sequence** keeps its own sound, which plays with its picture; sound from two **Sources** is mixed only during a crossfade, and a fade through black fades the sound with the picture
 - A **Source** whose **Play Speed** is not 1, or that has no sound, is silent in a **Sequence**

@@ -1,21 +1,29 @@
 """The Preview and the rendered Output of a Sequence."""
 
+from dataclasses import replace
+
 import pytest
 from conftest import file_time_shown, is_black
 from moviepy import VideoFileClip
 
 from vid_editor.model import (
     Corner,
+    DraftSettings,
+    JoinKind,
     OutputSettings,
     Project,
     SequenceSettings,
     Source,
     TextOverlay,
+    Transition,
     Workflow,
 )
 from vid_editor.render import (
     EditError,
+    join_times,
     render,
+    render_sequence_draft,
+    sequence_draft_window,
     sequence_frame_hints,
     sequence_geometry,
     sequence_preview,
@@ -109,3 +117,66 @@ def test_a_rendered_sequence_plays_its_sources_in_order(
         assert later[60, 80, 2] > 200  # the tall Source
         assert is_black(later[60:, :10])  # with Bars
         assert output.audio is not None
+
+
+# ---------------------------------------------------------------- Transitions
+
+
+def test_the_preview_mixes_two_sources_halfway_through_a_crossfade(
+    source_path, source_clip, tall_source_path, tall_source_clip
+):
+    project = sequence_of(
+        Source(source_path, join=Transition(JoinKind.CROSSFADE, 1.0)), Source(tall_source_path)
+    )
+    clips = [source_clip, tall_source_clip]
+    # 4 s and 2 s overlapping by 1 s: 5 s, crossfading from 3 s to 4 s.
+    assert sequence_spans(project, clips)[-1].output_end == pytest.approx(5.0, abs=0.02)
+    before, middle, after = (sequence_preview(project, clips, t)[90, 80] for t in (2.9, 3.5, 4.1))
+    assert before[2] < 20 and after[2] > 230
+    assert middle[2] == pytest.approx(127, abs=15)
+
+
+def test_a_fade_through_black_is_black_at_its_join(source_path, source_clip):
+    project = sequence_of(
+        Source(source_path, end_point=2, join=Transition(JoinKind.BLACK, 1.0)),
+        Source(source_path, start_point=2),
+    )
+    clips = [source_clip, source_clip]
+    assert join_times(sequence_spans(project, clips)) == pytest.approx([2.0])
+    assert is_black(sequence_preview(project, clips, 2.0))
+    assert not is_black(sequence_preview(project, clips, 1.4))
+
+
+def test_a_rendered_crossfade_is_shorter_and_keeps_its_sound(
+    tmp_path, source_path, source_clip
+):
+    project = sequence_of(
+        Source(source_path, end_point=2, join=Transition(JoinKind.CROSSFADE, 1.0)),
+        Source(source_path, start_point=2),
+        size=(160, 120),
+    )
+    project = replace(project, sequence=replace(project.sequence, fade_in=0.5))
+    written = render(project, [source_clip, source_clip], tmp_path / "crossfade.mp4")
+    with VideoFileClip(str(written)) as output:
+        assert output.duration == pytest.approx(3.0, abs=0.15)
+        assert output.audio is not None
+        assert is_black(output.get_frame(0.0))
+        # Halfway through the crossfade both halves show file time 1.5 and 2.5, mixed.
+        assert file_time_shown(output.get_frame(1.5)) == pytest.approx(2.0, abs=0.2)
+
+
+def test_a_sequence_draft_covers_the_stretch_around_a_join(
+    tmp_path, source_path, source_clip, tall_source_path, tall_source_clip
+):
+    project = sequence_of(
+        Source(source_path, join=Transition(JoinKind.CROSSFADE, 1.0)), Source(tall_source_path)
+    )
+    clips = [source_clip, tall_source_clip]
+    around = join_times(sequence_spans(project, clips))[0]
+    draft = DraftSettings(lead_in=1.0, lead_out=1.0, width=80)
+    assert sequence_draft_window(project, clips, draft, around) == pytest.approx((2.5, 4.5))
+    written = render_sequence_draft(project, clips, tmp_path / "draft.mp4", draft, around)
+    with VideoFileClip(str(written)) as output:
+        assert output.duration == pytest.approx(2.0, abs=0.15)
+        assert (output.w, output.h) == (80, 60)
+        assert output.audio is None

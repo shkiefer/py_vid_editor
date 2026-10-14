@@ -5,7 +5,7 @@ import json
 import pytest
 
 from vid_editor import project_file
-from vid_editor.model import Corner, EditError, Quality, SpeedChoice, Workflow
+from vid_editor.model import Corner, EditError, JoinKind, Quality, SpeedChoice, Workflow
 from vid_editor.project_file import ProjectSettings
 
 SOURCE = {
@@ -25,11 +25,15 @@ SOURCE = {
     "start_point": 0.5,
     "end_point": None,
     "play_speed": 1.0,
+    "join_kind": JoinKind.CROSSFADE,
+    "join_length": 0.5,
 }
 SHARED = {
     "workflow": Workflow.SEQUENCE,
     "seq_width": 1920,
     "seq_height": 1080,
+    "seq_fade_in": 1.0,
+    "seq_fade_out": 0.0,
     "lead_in": 1.0,
     "lead_out": 3.0,
     "out_width": 960,
@@ -52,6 +56,7 @@ SHARED = {
     "draft_lead_out": 0.5,
     "draft_width": 480,
     "draft_sound": True,
+    "draft_at": 1,
 }
 PANELS = [
     {"row": 1, "width": 1920, "height": 1080},
@@ -82,7 +87,8 @@ def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     document = json.loads(project_file.dumps(SETTINGS))
     assert document["format"] == 4
     assert document["workflow"] == "Sequence"
-    assert document["sequence"] == {"width": 1920, "height": 1080}
+    assert document["sequence"] == {"width": 1920, "height": 1080, "fade_in": 1.0, "fade_out": 0.0}
+    assert document["sources"][0]["join_after"] == {"kind": "Crossfade", "length": 0.5}
     assert document["sources"][0]["start_point"] == 0.5
     assert document["sources"][0]["end_point"] is None
     assert [source["sync_point"] for source in document["sources"]] == [2.5, 0.75]
@@ -95,7 +101,13 @@ def test_the_file_is_readable_text_grouped_by_what_each_setting_belongs_to():
     assert document["output"]["speed"] == "Custom" and document["output"]["custom_speed"] == 0.5
     assert document["sources"][0]["record_rate"] == 240.0
     assert document["text_overlay"]["corner"] == "Bottom left"
-    assert document["draft"] == {"lead_in": 1.5, "lead_out": 0.5, "width": 480, "sound": True}
+    assert document["draft"] == {
+        "lead_in": 1.5,
+        "lead_out": 0.5,
+        "width": 480,
+        "sound": True,
+        "sequence_join": 1,
+    }
     # An Overlay that is switched off keeps its settings.
     assert document["text_overlay"]["on"] is False
     assert "Proprietary – Do Not Distribute" in project_file.dumps(SETTINGS)
@@ -123,7 +135,7 @@ def test_a_format_3_file_opens_with_no_workflow_or_sequence_settings():
     for key in ("workflow", "sequence"):
         document.pop(key)
     for source in document["sources"]:
-        for key in ("start_point", "end_point", "play_speed"):
+        for key in ("start_point", "end_point", "play_speed", "join_after"):
             source.pop(key)
     settings = project_file.loads(json.dumps(document))
     assert not {"workflow", "seq_width", "seq_height"} & set(settings.shared)

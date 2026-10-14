@@ -12,7 +12,7 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from vid_editor import dialogs
-from vid_editor.model import Workflow
+from vid_editor.model import JoinKind, Workflow
 
 APP = str(Path(__file__).parent.parent / "streamlit_app.py")
 
@@ -307,9 +307,10 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
         "start_point": 0.0,
         "end_point": None,
         "play_speed": 1.0,
+        "join_after": {"kind": "Cut", "length": 1.0},
     }
     assert saved(project)["workflow"] == "Synced grid"
-    assert saved(project)["sequence"] == {"width": 160, "height": 120}
+    assert saved(project)["sequence"] == {"width": 160, "height": 120, "fade_in": 0.0, "fade_out": 0.0}
     assert any(f"Project file: {project}" in caption.value for caption in app.caption)
 
     app.number_input(key="crop_left_1").set_value(20)
@@ -792,7 +793,13 @@ def test_draft_settings_are_saved_and_reopened(source_path, tmp_path, monkeypatc
     app.number_input(key="draft_lead_in").set_value(0.5)
     app.number_input(key="draft_width").set_value(320)
     app.checkbox(key="draft_sound").check().run()
-    assert saved(project)["draft"] == {"lead_in": 0.5, "lead_out": 2.0, "width": 320, "sound": True}
+    assert saved(project)["draft"] == {
+        "lead_in": 0.5,
+        "lead_out": 2.0,
+        "width": 320,
+        "sound": True,
+        "sequence_join": 0,
+    }
 
     again = AppTest.from_file(APP, default_timeout=60)
     again.run()
@@ -1061,9 +1068,54 @@ def test_a_rendered_sequence_is_written(source_path, tall_source_path, tmp_path)
     app.number_input(key="start_point_1").set_value(3.0)
     app.text_input(key="out_folder").set_value(str(tmp_path))
     app.text_input(key="out_name").set_value("sequence.mp4").run()
-    assert not [button for button in app.button if button.key == "make_draft"]
     app.button(key="render").click().run()
     assert not app.exception
     with VideoFileClip(str(tmp_path / "sequence.mp4")) as output:
         assert output.duration == pytest.approx(3.0, abs=0.15)
         assert file_time_shown(output.get_frame(0.5)) == pytest.approx(3.5, abs=0.15)
+
+
+def test_a_crossfade_shortens_the_sequence_and_says_so(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    assert "join_kind_2" not in {widget.key for widget in app.selectbox}  # the last Source
+    assert app.number_input(key="join_length_1").disabled  # a cut has no length
+    app.selectbox(key="join_kind_1").set_value(JoinKind.CROSSFADE).run()
+    app.number_input(key="join_length_1").set_value(0.5).run()
+    assert sequence_row(app, 2)[:3] == ["3.500", "5.500", "2.000"]
+    assert "Total running time 5.500 s: the times on show added together, less 0.500 s of crossfades." in captions(app)
+    assert "Crossfades from 3.500 to 4.000 s, which takes 0.500 s off the running time." in captions(app)
+    app.slider(key="seq_time").set_value(3.75).run()
+    assert "mixed with" in captions(app) and "(50%)" in captions(app)
+
+
+def test_a_fade_through_black_keeps_the_running_time(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.selectbox(key="join_kind_1").set_value(JoinKind.BLACK).run()
+    app.number_input(key="join_length_1").set_value(1.0).run()
+    assert "Total running time 6.000 s: the times on show added together." in captions(app)
+    assert "black at 4.000 s" in captions(app)
+    app.slider(key="seq_time").set_value(4.0).run()
+    assert "it shows " in captions(app) and "(0%)" in captions(app)
+
+
+def test_a_transition_too_long_for_its_source_is_reported(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.selectbox(key="join_kind_1").set_value(JoinKind.CROSSFADE).run()
+    app.number_input(key="join_length_1").set_value(3.0).run()
+    assert "longer than Source 2's 2.000 s on show" in app.error[0].value
+
+
+def test_a_sequence_draft_is_made_around_a_join(source_path, tall_source_path, tmp_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.selectbox(key="join_kind_1").set_value(JoinKind.CROSSFADE).run()
+    app.number_input(key="seq_fade_in").set_value(0.5)
+    app.text_input(key="out_folder").set_value(str(tmp_path))
+    app.text_input(key="out_name").set_value("sequence.mp4").run()
+    app.number_input(key="draft_lead_in").set_value(1.0)
+    app.number_input(key="draft_lead_out").set_value(1.0)
+    app.selectbox(key="draft_at").set_value(1).run()
+    assert "covering 2.500 to 4.500 s of the Output (2.000 s)" in captions(app)
+    app.button(key="make_draft").click().run()
+    assert not app.exception
+    with VideoFileClip(str(tmp_path / "sequence_draft.mp4")) as draft:
+        assert draft.duration == pytest.approx(2.0, abs=0.15)

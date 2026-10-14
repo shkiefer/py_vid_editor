@@ -21,10 +21,12 @@ from vid_editor.model import (
     Source,
     SpeedChoice,
     TextOverlay,
+    Transition,
+    JoinKind,
     Workflow,
 )
 from vid_editor.overlays import IMAGE_TYPES, LOGO_FOLDER, image_patch, text_patch
-from vid_editor.sequence import on_show
+from vid_editor.sequence import mix_at, on_show
 from vid_editor.timing import frame_at, source_speed, step_frames
 from vid_editor.render import (
     EditError,
@@ -38,6 +40,9 @@ from vid_editor.render import (
     preview,
     render,
     render_draft,
+    render_sequence_draft,
+    join_times,
+    sequence_draft_window,
     sequence_frame_hints,
     sequence_geometry,
     sequence_preview,
@@ -496,6 +501,8 @@ for source_id in source_ids:
         "start_point": 0.0,
         "end_point": None,
         "play_speed": 1.0,
+        "join_kind": JoinKind.CUT,
+        "join_length": 1.0,
     }
     for name, value in fresh.items():
         if f"{name}_{source_id}" not in state:
@@ -526,6 +533,7 @@ def as_source(source_id: int, values: dict, panel: int = 0) -> Source:
         start_point=values["start_point"],
         end_point=values["end_point"],
         play_speed=values["play_speed"],
+        join=Transition(values["join_kind"], values["join_length"]),
     )
 
 
@@ -614,6 +622,9 @@ for key, value in {
     "draft_lead_out": DraftSettings.lead_out,
     "draft_width": DraftSettings.width,
     "draft_sound": DraftSettings.sound,
+    "draft_at": 0,
+    "seq_fade_in": 0.0,
+    "seq_fade_out": 0.0,
     **OVERLAY_DEFAULTS,
 }.items():
     state.setdefault(key, value)
@@ -636,6 +647,9 @@ for key in (
     "speed_custom",
     "preview_offset",
     "seq_time",
+    "draft_at",
+    "seq_fade_in",
+    "seq_fade_out",
 ):
     state[key] = state[key]
 for key in ("seq_width", "seq_height"):
@@ -671,7 +685,7 @@ state.audio_pick = state.audio_pick  # kept while a Sequence hides it
 settings, result = st.columns([5, 6], gap="large")
 
 # ------------------------------------------------------------------- Settings
-size_hints, frame_hint_slots, panel_hints, trim_hints = {}, {}, {}, {}
+size_hints, frame_hint_slots, panel_hints, trim_hints, join_hints = {}, {}, {}, {}, {}
 sequence_hint = None
 with settings:
     if grid:
@@ -739,15 +753,32 @@ with settings:
             )
     else:
         with st.container(border=True):
-            st.subheader("Sequence Panel")
+            st.subheader("Sequence")
             st.caption(
                 "Every Source is shown in this one Panel, in turn. It started at the first "
                 "Source's size; it changes only when retyped."
             )
             seq_columns = st.columns(2)
-            seq_columns[0].number_input("Width (px)", key="seq_width", min_value=2, step=2)
-            seq_columns[1].number_input("Height (px)", key="seq_height", min_value=2, step=2)
+            seq_columns[0].number_input("Panel width (px)", key="seq_width", min_value=2, step=2)
+            seq_columns[1].number_input("Panel height (px)", key="seq_height", min_value=2, step=2)
             sequence_hint = st.empty()
+            fade_columns = st.columns(2)
+            fade_columns[0].number_input(
+                "Fade in from black (s)",
+                key="seq_fade_in",
+                min_value=0.0,
+                step=0.25,
+                format="%.3f",
+                help="Seconds at the very start over which the picture and sound fade up. 0 is none.",
+            )
+            fade_columns[1].number_input(
+                "Fade out to black (s)",
+                key="seq_fade_out",
+                min_value=0.0,
+                step=0.25,
+                format="%.3f",
+                help="Seconds at the very end over which the picture and sound fade down. 0 is none.",
+            )
 
     with st.container(border=True):
         st.subheader("Sources")
@@ -896,6 +927,32 @@ with settings:
                         "as long; 2 at double speed. Sound is kept only at 1.",
                     )
                     trim_hints[source_id] = st.empty()
+                    if source_id != source_ids[-1]:
+                        join_columns = st.columns([3, 2], vertical_alignment="bottom")
+                        join_columns[0].selectbox(
+                            "After this Source",
+                            list(JoinKind),
+                            key=f"join_kind_{source_id}",
+                            format_func=lambda kind: kind.value,
+                            help="What happens where the next Source takes over. A fade through "
+                            "black fades this Source out and the next in, half the length each. "
+                            "A crossfade overlaps the two by its length, mixing picture and sound, "
+                            "and makes the Sequence that much shorter.",
+                        )
+                        join_columns[1].number_input(
+                            "Length (s)",
+                            key=f"join_length_{source_id}",
+                            min_value=0.001,
+                            step=0.25,
+                            format="%.3f",
+                            disabled=state[f"join_kind_{source_id}"] is JoinKind.CUT,
+                        )
+                        join_hints[source_id] = st.empty()
+                    else:
+                        st.caption(
+                            "The last Source. The Sequence ends with it, after the fade out "
+                            "set above, if any."
+                        )
                 with st.container(horizontal=True, vertical_alignment="bottom"):
                     st.number_input(
                         "Rotation (degrees, anticlockwise)",
@@ -1429,6 +1486,24 @@ with result:
                 f"{span.file_start:.3f} to {span.file_end:.3f} s, for {span.time_on_show:.3f} s: "
                 f"from {span.output_start:.3f} to {span.output_end:.3f} s of the Output."
             )
+        joins = join_times(spans)
+        for position, source_id in enumerate(source_ids[:-1]):
+            join = project.sources[position].join
+            at = joins[position]
+            if join.kind is JoinKind.CUT:
+                text = f"A cut at {at:.3f} s of the Output."
+            elif join.kind is JoinKind.BLACK:
+                text = (
+                    f"Fades to black from {at - join.length / 2:.3f} s, black at {at:.3f} s, "
+                    f"and up from black by {at + join.length / 2:.3f} s. The running time is "
+                    "unchanged."
+                )
+            else:
+                text = (
+                    f"Crossfades from {at - join.length / 2:.3f} to {at + join.length / 2:.3f} s, "
+                    f"which takes {join.length:.3f} s off the running time."
+                )
+            join_hints[source_id].caption(text)
         scaled = abs(sizes.layout.scale - 1) > 1e-9
         if scaled:
             sequence_hint.caption(
@@ -1538,12 +1613,19 @@ with result:
         st.image(fit_within(shown, *PREVIEW_BOX), width="stretch")
 
     if not grid:
-        span = spans[source_ids.index(showing)]
-        file_time = span.file_time_at(min(state.seq_time, span.output_end))
+        mix = mix_at(spans, state.seq_time)
+        shown_now = []
+        for position, weight in mix:
+            span = spans[position]
+            part = f"{source_label(source_ids[position])} at {span.file_time_at(state.seq_time):.3f} s into its file"
+            if len(mix) > 1 or weight < 1:
+                part += f" ({weight:.0%})"
+            shown_now.append(part)
         st.caption(
             f"Output is {width} by {height} pixels and runs for {running_time:.3f} s at {rate:g} "
-            f"frames per second. At {state.seq_time:.3f} s it shows {source_label(showing)}, "
-            f"at {file_time:.3f} s into its file."
+            f"frames per second. At {state.seq_time:.3f} s it shows "
+            + (" mixed with ".join(shown_now) if shown_now else "black")
+            + "."
         )
         sounds = [
             sequence_silence_reason(clip, source) for clip, source in zip(row_clips, project.sources)
@@ -1559,11 +1641,134 @@ with result:
                 "Play Speed": [f"{source.play_speed:g}" for source in project.sources],
                 "Frame Hint": [str(hint) for hint in hints],
                 "Sound": ["yes" if reason is None else f"no: {reason}" for reason in sounds],
+                "After it": [
+                    "end"
+                    if position == len(spans) - 1
+                    else "cut"
+                    if source.join.kind is JoinKind.CUT
+                    else f"{source.join.kind.value.lower()}, {source.join.length:.3f} s"
+                    for position, source in enumerate(project.sources)
+                ],
             }
         )
+        overlap = sum(span.cross_out for span in spans)
         st.caption(
-            f"Total running time {running_time:.3f} s: the times on show added together."
+            f"Total running time {running_time:.3f} s: the times on show added together"
+            + (f", less {overlap:.3f} s of crossfades." if overlap else ".")
         )
+
+        st.subheader("Draft")
+        draft_file = None
+        if state.out_folder.strip() and state.out_name.strip():
+            draft_file = Path(clean(state.out_folder)) / f"{Path(state.out_name.strip()).stem}_draft.mp4"
+        points = [0.0, *joins]
+        if state.draft_at >= len(points):
+            state.draft_at = 0
+        st.selectbox(
+            "Around",
+            list(range(len(points))),
+            key="draft_at",
+            format_func=lambda choice: (
+                "The start"
+                if choice == 0
+                else f"Join {choice}: {source_label(source_ids[choice - 1])} to "
+                f"{source_label(source_ids[choice])}"
+            ),
+            help="The Draft covers a few seconds either side of this point.",
+        )
+        draft_columns = st.columns(4, vertical_alignment="bottom")
+        draft_columns[0].number_input(
+            "Seconds before", key="draft_lead_in", min_value=0.0, step=0.5, format="%.3f"
+        )
+        draft_columns[1].number_input(
+            "Seconds after", key="draft_lead_out", min_value=0.0, step=0.5, format="%.3f"
+        )
+        draft_columns[2].number_input(
+            "Draft width (px)",
+            key="draft_width",
+            min_value=16,
+            step=16,
+            help="The height follows from the picture. An Output narrower than this is not enlarged.",
+        )
+        draft_columns[3].checkbox("Draft sound", key="draft_sound")
+        draft_settings = DraftSettings(
+            lead_in=state.draft_lead_in,
+            lead_out=state.draft_lead_out,
+            width=state.draft_width,
+            sound=state.draft_sound,
+        )
+        around = points[state.draft_at]
+        small = None
+        try:
+            window = sequence_draft_window(project, row_clips, draft_settings, around)
+            small = draft_project(project, row_clips, draft_settings)
+            draft_size = sequence_geometry(small, row_clips).layout
+        except EditError as error:
+            small = None
+            st.error(str(error), icon=":material/error:")
+        else:
+            st.caption(
+                f"The Draft will be {draft_size.width} by {draft_size.height} pixels at low "
+                f"picture quality, {'with' if state.draft_sound else 'without'} sound, covering "
+                f"{window[0]:.3f} to {window[1]:.3f} s of the Output "
+                f"({window[1] - window[0]:.3f} s)."
+            )
+        draft_problem = None
+        if draft_file is None:
+            draft_problem = "Choose an Output folder and file name. The Draft is written beside the Output."
+        elif any(draft_file.resolve() == Path(path).resolve() for path in paths.values()):
+            draft_problem = f"The Draft would replace the Source file {draft_file.name}."
+        if draft_problem:
+            st.warning(draft_problem, icon=":material/warning:")
+        elif small is not None:
+            st.caption(f"It is written to {draft_file}, replacing the Draft before it.")
+        draft_key = (small, around)
+        if st.button(
+            "Make Draft",
+            icon=":material/play_circle:",
+            key="make_draft",
+            disabled=small is None or bool(draft_problem),
+        ):
+            bar = st.progress(0.0, text="Starting")
+            started = time.perf_counter()
+            try:
+                with ExitStack() as readers:
+                    fresh_clips = [
+                        readers.enter_context(open_source(source.path)) for source in project.sources
+                    ]
+                    render_sequence_draft(
+                        project,
+                        fresh_clips,
+                        draft_file,
+                        draft_settings,
+                        around,
+                        on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
+                    )
+            except (EditError, OSError) as error:
+                bar.empty()
+                st.error(f"The Draft failed: {error}", icon=":material/error:")
+                st.stop()
+            bar.empty()
+            state.draft = {
+                "project": draft_key,
+                "path": str(draft_file),
+                "seconds": time.perf_counter() - started,
+            }
+        if state.draft and Path(state.draft["path"]).is_file():
+            st.success(
+                f"Draft written to {state.draft['path']} in {state.draft['seconds']:.1f} s",
+                icon=":material/check_circle:",
+            )
+            if state.draft["project"] != draft_key:
+                st.warning(
+                    "Settings have changed since this Draft was made. Make it again to see them.",
+                    icon=":material/warning:",
+                )
+            if st.button("Open Draft", icon=":material/open_in_new:", key="open_draft"):
+                try:
+                    dialogs.open_file(state.draft["path"])
+                except OSError as error:
+                    st.error(f"The Draft could not be opened: {error}", icon=":material/error:")
 
     if grid:
         sound = "no sound" if silent_because else f"sound from Panel {audio_panel + 1}"

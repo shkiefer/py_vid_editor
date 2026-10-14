@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from vid_editor.model import Corner, EditError, Quality, SpeedChoice, Workflow
+from vid_editor.model import Corner, EditError, JoinKind, Quality, SpeedChoice, Workflow
 
 FORMAT = 4
 # Format 1 held one Source and had no Audio Source. Format 2 held several, each
@@ -69,6 +69,8 @@ _SOURCE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
     ("start_point", "start_point", _number(float, 0)),
     ("end_point", "end_point", _optional(_number(float, 0))),
     ("play_speed", "play_speed", _number(float, 0.001)),
+    ("join_kind", "join_after.kind", JoinKind),
+    ("join_length", "join_after.length", _number(float, 0.001)),
 )
 
 # What each entry of "panels" holds.
@@ -86,6 +88,8 @@ _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
     ("workflow", "", "workflow", Workflow),
     ("seq_width", "sequence", "width", _number(int, 2)),
     ("seq_height", "sequence", "height", _number(int, 2)),
+    ("seq_fade_in", "sequence", "fade_in", _number(float, 0)),
+    ("seq_fade_out", "sequence", "fade_out", _number(float, 0)),
     ("lead_in", "output", "lead_in", _number(float, 0)),
     ("lead_out", "output", "lead_out", _number(float, 0)),
     ("out_width", "output", "width", _optional(_number(int, 2))),
@@ -108,6 +112,7 @@ _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
     ("draft_lead_out", "draft", "lead_out", _number(float, 0)),
     ("draft_width", "draft", "width", _number(int, 2)),
     ("draft_sound", "draft", "sound", _switch),
+    ("draft_at", "draft", "sequence_join", _number(int, 0)),
 )
 _SHARED_SECTIONS = ("", "sequence", "output", "text_overlay", "image_overlay", "draft")
 

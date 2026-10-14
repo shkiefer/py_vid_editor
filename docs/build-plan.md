@@ -17,7 +17,7 @@ Each slice ends with something runnable.
 9. **Column, then grid** (done) — width matching, Bars, Crop Hint.
 10. **Layout of typed Panels** (done) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
 11. **Sequence, with cuts** (done) — the Sequence / Synced grid switch; Sources in play order in one typed Panel, each with a Start Point, an End Point and a Play Speed; a timing table, a Preview at any running time, and the Render; a new Project file format.
-12. **Transitions** — at each Join a cut, a fade through black or a crossfade, each with its own length; a fade in at the start and out at the end; sound that fades and crossfades with the picture; a Draft around a chosen Join.
+12. **Transitions** (built, awaiting verification) — at each Join a cut, a fade through black or a crossfade, each with its own length; a fade in at the start and out at the end; sound that fades and crossfades with the picture; a Draft around a chosen Join.
 
 ## Decisions
 

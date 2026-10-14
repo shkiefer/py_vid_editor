@@ -15,7 +15,15 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from moviepy import ColorClip, VideoClip, VideoFileClip, concatenate_videoclips, vfx
+from moviepy import (
+    ColorClip,
+    CompositeAudioClip,
+    VideoClip,
+    VideoFileClip,
+    afx,
+    concatenate_videoclips,
+    vfx,
+)
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
@@ -32,7 +40,7 @@ from vid_editor.model import (
     Workflow,
 )
 from vid_editor.overlays import overlay_patches, stamper
-from vid_editor.sequence import ClipSpan, clip_spans, on_show
+from vid_editor.sequence import ClipSpan, clip_spans, mix_at
 from vid_editor.timing import (
     FrameHint,
     SourceSpan,
@@ -600,7 +608,21 @@ def preview(
 
 def sequence_spans(project: Project, clips: Sequence[VideoFileClip]) -> tuple[ClipSpan, ...]:
     """Each Source's place in a Sequence's running time, in play order."""
-    return clip_spans(project.sources, [float(clip.duration) for clip in clips])
+    sequence = project.sequence
+    return clip_spans(
+        project.sources,
+        [float(clip.duration) for clip in clips],
+        fade_in=sequence.fade_in if sequence else 0.0,
+        fade_out=sequence.fade_out if sequence else 0.0,
+    )
+
+
+def join_times(spans: Sequence[ClipSpan]) -> list[float]:
+    """The Output running time of each Join: where a cut falls, or the middle of a fade or crossfade."""
+    return [
+        (later.output_start + earlier.output_end) / 2
+        for earlier, later in zip(spans, spans[1:])
+    ]
 
 
 def sequence_geometry(project: Project, clips: Sequence[VideoFileClip]) -> Geometry:
@@ -651,10 +673,26 @@ def sequence_silence_reason(clip: VideoFileClip, source: Source) -> str | None:
     return None
 
 
+def _mixed(frames: Sequence[np.ndarray], weights: Sequence[float]) -> np.ndarray:
+    """Frames laid over one another in the given amounts, on black."""
+    if len(frames) == 1 and weights[0] >= 1:
+        return frames[0]
+    total = np.zeros(frames[0].shape, dtype=np.float32)
+    for frame, weight in zip(frames, weights):
+        total += frame.astype(np.float32) * weight
+    return np.clip(np.rint(total), 0, 255).astype(np.uint8)
+
+
+def _has_transitions(spans: Sequence[ClipSpan]) -> bool:
+    return any(
+        span.fade_in or span.fade_out or span.cross_in or span.cross_out for span in spans
+    )
+
+
 def build_sequence(
     project: Project, clips: Sequence[VideoFileClip], rough: bool = False
 ) -> VideoClip:
-    """Compose a whole Sequence: each Source in turn, in play order."""
+    """Compose a whole Sequence: each Source in turn, in play order, with its Transitions."""
     sizes = sequence_geometry(project, clips)
     layout, pictures = sizes.layout, sizes.pictures
     spans = sequence_spans(project, clips)
@@ -684,7 +722,39 @@ def build_sequence(
                 piece = piece.with_audio(sound)
         pieces.append(piece.with_duration(span.time_on_show))
 
-    output = pieces[0] if len(pieces) == 1 else concatenate_videoclips(pieces, method="chain")
+    if not _has_transitions(spans):
+        output = pieces[0] if len(pieces) == 1 else concatenate_videoclips(pieces, method="chain")
+    else:
+        # Most frames show one Source at full strength and cost no more than a
+        # cut. Only a fade or a crossfade mixes frames.
+        black = np.zeros((layout.height, layout.width, 3), dtype=np.uint8)
+
+        def frame_at_time(t: float) -> np.ndarray:
+            mix = mix_at(spans, t)
+            if not mix:
+                return black
+            return _mixed(
+                [pieces[position].get_frame(t - spans[position].output_start) for position, _ in mix],
+                [weight for _, weight in mix],
+            )
+
+        output = VideoClip(frame_function=frame_at_time, duration=spans[-1].output_end)
+        sounds = []
+        for piece, span in zip(pieces, spans):
+            if piece.audio is None:
+                continue
+            fades = []
+            if span.fade_in + span.cross_in > 0:
+                fades.append(afx.AudioFadeIn(span.fade_in + span.cross_in))
+            if span.fade_out + span.cross_out > 0:
+                fades.append(afx.AudioFadeOut(span.fade_out + span.cross_out))
+            sound = piece.audio.with_effects(fades) if fades else piece.audio
+            sounds.append(sound.with_start(span.output_start))
+        if sounds:
+            output = output.with_audio(
+                CompositeAudioClip(sounds).with_duration(spans[-1].output_end)
+            )
+
     patches = overlay_patches(project.output, layout.width)
     if patches:
         output = output.image_transform(stamper(patches, (layout.width, layout.height)))
@@ -694,24 +764,61 @@ def build_sequence(
 def sequence_preview(
     project: Project, clips: Sequence[VideoFileClip], output_time: float
 ) -> np.ndarray:
-    """The Preview of a Sequence: the frame of the Source on show at a running time."""
+    """The Preview of a Sequence: the frame on show at a running time, mixed as the Output mixes it."""
     sizes = sequence_geometry(project, clips)
     layout, pictures = sizes.layout, sizes.pictures
     spans = sequence_spans(project, clips)
     last_frame_time = max(0.0, spans[-1].output_end - 1 / output_rate(project, clips))
     output_time = min(max(output_time, 0.0), last_frame_time)
-    position = on_show(spans, output_time)
-    clip, source, picture, span = (
-        clips[position], project.sources[position], pictures[position], spans[position]
-    )
-    file_time = min(span.file_time_at(output_time), span.file_end - 0.5 / float(clip.fps))
-    frame = edit_frame(source_frame(clip, file_time), source, (picture.width, picture.height))
-    if not _fills_the_output(layout, [picture]):
-        frame = _composed(layout, [picture], [frame])
+    frames, weights = [], []
+    for position, weight in mix_at(spans, output_time):
+        clip, source, picture, span = (
+            clips[position], project.sources[position], pictures[position], spans[position]
+        )
+        file_time = min(span.file_time_at(output_time), span.file_end - 0.5 / float(clip.fps))
+        frame = edit_frame(source_frame(clip, file_time), source, (picture.width, picture.height))
+        if not _fills_the_output(layout, [picture]):
+            frame = _composed(layout, [picture], [frame])
+        frames.append(frame)
+        weights.append(weight)
+    if frames:
+        frame = _mixed(frames, weights)
+    else:
+        frame = np.zeros((layout.height, layout.width, 3), dtype=np.uint8)
     patches = overlay_patches(project.output, layout.width)
     if patches:
         frame = stamper(patches, (layout.width, layout.height))(frame)
     return frame
+
+
+def sequence_draft_window(
+    project: Project, clips: Sequence[VideoFileClip], draft: DraftSettings, around: float
+) -> tuple[float, float]:
+    """The stretch of a Sequence's running time that its Draft covers."""
+    if draft.lead_in < 0 or draft.lead_out < 0 or draft.lead_in + draft.lead_out <= 0:
+        raise EditError("The Draft's seconds before plus seconds after must be greater than zero")
+    total = sequence_spans(project, clips)[-1].output_end
+    start, end = max(0.0, around - draft.lead_in), min(total, around + draft.lead_out)
+    if end - start <= 0:
+        raise EditError("The Draft would be empty")
+    return start, end
+
+
+def render_sequence_draft(
+    project: Project,
+    clips: Sequence[VideoFileClip],
+    destination: str | Path,
+    draft: DraftSettings,
+    around: float,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """Write a Draft of a Sequence: a stretch either side of a time, such as a Join."""
+    start, end = sequence_draft_window(project, clips, draft, around)
+    small = draft_project(project, clips, draft)
+    output = build_sequence(small, clips, rough=True).subclipped(start, end)
+    if not draft.sound:
+        output = output.without_audio()
+    return _write(output, Path(destination), "ultrafast", _DRAFT_CRF, on_progress)
 
 
 def fit_within(frame: np.ndarray, max_width: int, max_height: int) -> np.ndarray:
@@ -791,7 +898,8 @@ def draft_project(
     if draft.width < 2:
         raise EditError("The Draft width must be at least 2 pixels")
     output = replace(project.output, lead_in=draft.lead_in, lead_out=draft.lead_out)
-    full_width = geometry(project, clips).layout.width
+    measure = sequence_geometry if project.workflow is Workflow.SEQUENCE else geometry
+    full_width = measure(project, clips).layout.width
     if draft.width < full_width:
         text = output.text_overlay
         if text is not None:
