@@ -6,3 +6,6 @@ __pycache__/
 # rendered video and drafts
 output/
 drafts/
+# test clips, saved Projects and renders kept locally
+references/
+assets/logos/logo_2023.png
