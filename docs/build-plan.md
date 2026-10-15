@@ -17,7 +17,7 @@ Each slice ends with something runnable.
 9. **Column, then grid** (done) — width matching, Bars, Crop Hint.
 10. **Layout of typed Panels** (done) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
 11. **Sequence, with cuts** (done) — the Sequence / Synced grid switch; Sources in play order in one typed Panel, each with a Start Point, an End Point and a Play Speed; a timing table, a Preview at any running time, and the Render; a new Project file format.
-12. **Transitions** (built, awaiting verification) — at each Join a cut, a fade through black or a crossfade, each with its own length; a fade in at the start and out at the end; sound that fades and crossfades with the picture; a Draft around a chosen Join.
+12. **Transitions** (done) — at each Join a cut, a fade through black or a crossfade, each with its own length; a fade in at the start and out at the end; sound that fades and crossfades with the picture; a Draft around a chosen Join.
 
 ## Decisions
 
@@ -92,7 +92,7 @@ Each slice ends with something runnable.
 - **Format 3** lists the Panels, says which Panel each Source is in, and names the Audio Panel. It also holds each Record Rate, the Output Speed and the Draft settings.
 - **Older files still open.** Format 1 held one Source; format 2 held several, each with a Row. Each Source of such a file gets a Panel of the size the old rules gave it, worked out once every Source file is open, and only the first Source keeps its typed resize. A Row the old layout left black at its right-hand end gets an empty Panel there. The Output is then the same as before, except that with an Output width a boundary between Panels can move by one pixel. The file is rewritten in format 3 at the first save.
 
-### Agreed for slices 11 and 12, not yet built
+### Agreed for slices 11 and 12
 
 The terms are in `../CONTEXT.md`: Synced grid, Sequence, Join, Transition, Play Speed, Start Point, End Point. Why the two workflows are kept apart is in `adr/0004-two-workflows-do-not-mix.md`.
 
