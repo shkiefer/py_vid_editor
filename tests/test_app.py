@@ -1098,6 +1098,16 @@ def test_a_fade_through_black_keeps_the_running_time(source_path, tall_source_pa
     assert "it shows " in captions(app) and "(0%)" in captions(app)
 
 
+def test_the_sequence_fades_reach_the_preview(source_path, tall_source_path):
+    app = as_sequence(open_app(source_path, tall_source_path))
+    app.number_input(key="seq_fade_in").set_value(1.0).run()
+    app.slider(key="seq_time").set_value(0.5).run()
+    assert "(50%)" in captions(app)
+    app.number_input(key="seq_fade_out").set_value(1.0).run()
+    app.slider(key="seq_time").set_value(5.5).run()
+    assert "(50%)" in captions(app)
+
+
 def test_a_transition_too_long_for_its_source_is_reported(source_path, tall_source_path):
     app = as_sequence(open_app(source_path, tall_source_path))
     app.selectbox(key="join_kind_1").set_value(JoinKind.CROSSFADE).run()

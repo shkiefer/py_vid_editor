@@ -1372,7 +1372,11 @@ with result:
         ),
         audio_panel=audio_panel,
         workflow=state.workflow,
-        sequence=None if grid else SequenceSettings(state.seq_width, state.seq_height),
+        sequence=None
+        if grid
+        else SequenceSettings(
+            state.seq_width, state.seq_height, state.seq_fade_in, state.seq_fade_out
+        ),
     )
     if grid and project.output.running_time <= 0:
         st.error("Lead-in plus Lead-out must be greater than zero.", icon=":material/error:")
