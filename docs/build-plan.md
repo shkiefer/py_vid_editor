@@ -4,7 +4,7 @@ The build order and the decisions that are not domain language. Domain terms liv
 
 ## Slices
 
-Each slice ends with something runnable.
+Each slice ends with something runnable. All twelve are done; the build paused there on 2026-10-14 with no slice planned after 12.
 
 1. **Environment** (done) — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
 2. **One Source, end to end** (done) — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
@@ -37,7 +37,7 @@ Each slice ends with something runnable.
 - **Layout section**: lists the Panels in order, each with its Row, width and height, buttons to list it earlier or later (left or right in its Row) and to remove it when empty, and "Add a Panel", which puts an empty Panel beside the last one at its Row's height and the same width. See `adr/0003`.
 - **A new Panel's size**: its Row's height and the width that fits its Source, rounded to an even number; the first Panel of all takes its Source's own size. After that it changes only when retyped.
 - **Typed sizes and the Output**: with no Output width the Output is exactly the typed Panels, less an odd pixel trimmed from the right or bottom. An Output width scales the whole layout, and the screen then gives each Panel's size in the Output beside its typed one. Edges are rounded one by one, so Panels that touch as typed touch in the Output.
-- **Placing a Source**: each Source's tab has a Panel picker. It offers the Source's own Panel and any empty one. Until slice 11 a Panel holds one Source.
+- **Placing a Source**: each Source's tab has a Panel picker. It offers the Source's own Panel and any empty one. A grid Panel holds at most one Source.
 - **A Source in its Panel**: with its resize left empty it is fitted inside. With a width typed it is that wide, in typed pixels. Either way it is centred, with Bars where it is smaller than the Panel and an even cut where it is larger. A Source sized to within a pixel of its typed Panel takes the whole Panel, so the rounding of an Output width never leaves a hairline Bar.
 - **Scale to Panel buttons**: "Scale width to Panel" and "Scale height to Panel" fill in the Source's resize width once. A later change to the crop or to the Panel leaves that width as typed, so the button is pressed again.
 - **Crop Hint feedback**: beside each Source's resize the screen gives its Panel's size, the size the Source is scaled to, its Bars and what the Panel cuts off. A fitted Source with Bars is told how much to crop to fill the Panel. A Source larger than its Panel is told how many of its own pixels are hidden, so the crop can be typed to choose which part is kept.
@@ -92,7 +92,7 @@ Each slice ends with something runnable.
 - **Format 3** lists the Panels, says which Panel each Source is in, and names the Audio Panel. It also holds each Record Rate, the Output Speed and the Draft settings.
 - **Older files still open.** Format 1 held one Source; format 2 held several, each with a Row. Each Source of such a file gets a Panel of the size the old rules gave it, worked out once every Source file is open, and only the first Source keeps its typed resize. A Row the old layout left black at its right-hand end gets an empty Panel there. The Output is then the same as before, except that with an Output width a boundary between Panels can move by one pixel. The file is rewritten in format 3 at the first save.
 
-### Agreed for slices 11 and 12
+### Sequence (slices 11 and 12)
 
 The terms are in `../CONTEXT.md`: Synced grid, Sequence, Join, Transition, Play Speed, Start Point, End Point. Why the two workflows are kept apart is in `adr/0004-two-workflows-do-not-mix.md`.
 
@@ -103,7 +103,10 @@ The terms are in `../CONTEXT.md`: Synced grid, Sequence, Join, Transition, Play 
 - **Timing table** (slice 11): one row per Source with its Output start and end, time on show, file stretch used, Frame Hint and whether it has sound (and why not), and the total running time.
 - **Preview** (slice 11): a slider over the running time, and a way to jump to the start of any Source.
 - **Transitions** (slice 12): one per Join, a cut, a fade through black or a crossfade, with a length; a fade from black at the start and to black at the end. A fade through black of length L is L/2 out and L/2 in. A crossfade mixes the two sounds over its length.
-- **Sequence Draft** (slice 12): a rough render a chosen number of seconds either side of a chosen Join.
+- **Sequence Draft** (slice 12): a rough render a chosen number of seconds either side of "The start" or a chosen Join. It shares its seconds, width and sound settings with the grid's Draft.
+- **A Transition belongs to the Source before its Join** (slice 12), so it moves with that clip when the play order changes and is lost when the clip is removed. The last Source's Transition is not shown or used.
+- **Fades are linear** (slice 12), in picture and sound, crossfades included.
+- **A Join sits at the middle of its fade or crossfade** (slice 12), and a Draft around it is centred there.
 - **Project file** (slice 11): format 4 adds the workflow, the Sequence Panel and each Source's Start Point, End Point and Play Speed. A file without a workflow opens as a Synced grid.
 
 ## Known limits
