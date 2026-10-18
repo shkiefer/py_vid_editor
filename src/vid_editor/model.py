@@ -132,6 +132,22 @@ class Transition:
 
 
 @dataclass(frozen=True)
+class AudioTrack:
+    """A sound file laid over the Output, placed on its running time."""
+
+    path: str
+    start: float = 0.0
+    """Output running time at which the Audio Track begins."""
+    file_start: float = 0.0
+    """File time from which the Audio Track plays."""
+    volume: float = 100.0
+    """Percentage of the sound as it is in its file, from 0 to 200."""
+    fade_out: float = 1.0
+    """Seconds before the end of the Output over which an Audio Track it cuts off
+    fades out. 0 stops it dead at the end."""
+
+
+@dataclass(frozen=True)
 class OutputSettings:
     """Settings that belong to the Output as a whole."""
 
@@ -149,6 +165,10 @@ class OutputSettings:
     quality: Quality = Quality.MEDIUM
     text_overlay: TextOverlay | None = None
     image_overlay: ImageOverlay | None = None
+    audio_tracks: tuple[AudioTrack, ...] = ()
+    source_volume: float = 100.0
+    """Percentage for the sound from the Sources: the Audio Panel's in a
+    Synced grid, every Source's in a Sequence."""
 
     @property
     def running_time(self) -> float:

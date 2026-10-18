@@ -34,6 +34,10 @@ The app only listens on this computer. It reads Source files by path and writes 
 3. Set each clip's "After this Source" to a cut, a fade through black or a crossfade, with a length, and set the fade in and fade out for the whole Sequence. The captions give each Transition's times; a crossfade shortens the Output by its length.
 4. Move the Preview slider to check any moment, make a Draft around a Join, then render the Output.
 
+## Add music or other sound
+
+In either workflow, the Sound box under the Output settings sets the Sources' volume and adds Audio Tracks: any file with sound, laid over the Output. Give each one the Output time it starts at, how far into its file to begin, its volume and the fade-out used when the Output ends first. Each one says where it plays. The Mix Hint gives the loudest point of the mix and warns when it clips.
+
 ## Projects
 
 Save Project as keeps every setting in a readable JSON file, which is then updated after every change.

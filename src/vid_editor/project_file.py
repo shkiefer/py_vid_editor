@@ -15,12 +15,12 @@ from typing import Any
 
 from vid_editor.model import Corner, EditError, JoinKind, Quality, SpeedChoice, Workflow
 
-FORMAT = 4
+FORMAT = 5
 # Format 1 held one Source and had no Audio Source. Format 2 held several, each
 # with a Row, and the Sources set the sizes. Format 3 lists its Panels. Format 4
 # adds the workflow and the Sequence's settings; a file without them is a
-# Synced grid.
-_READABLE_FORMATS = (1, 2, 3, 4)
+# Synced grid. Format 5 adds the Audio Tracks and the Sources' volume.
+_READABLE_FORMATS = (1, 2, 3, 4, 5)
 _FIRST_FORMAT_WITH_PANELS = 3
 EXTENSION = ".json"
 
@@ -73,6 +73,17 @@ _SOURCE_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
     ("join_length", "join_after.length", _number(float, 0.001)),
 )
 
+# Per-Audio Track setting, name within each entry of "audio_tracks", reader.
+_TRACK_FIELDS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
+    ("path", "path", _text),
+    ("track_start", "start", _number(float, 0)),
+    ("track_file_start", "file_start", _number(float, 0)),
+    ("track_volume", "volume", _number(float, 0, 200)),
+    ("track_fade_out", "fade_out", _number(float, 0)),
+)
+TRACK_KEYS = tuple(key for key, *_ in _TRACK_FIELDS if key != "path")
+"""The settings each Audio Track has, besides its path."""
+
 # What each entry of "panels" holds.
 _PANEL_FIELDS: tuple[tuple[str, Callable[[Any], Any]], ...] = (
     ("row", _number(int, 1)),
@@ -97,6 +108,7 @@ _SHARED_FIELDS: tuple[tuple[str, str, str, Callable[[Any], Any]], ...] = (
     ("speed_choice", "output", "speed", SpeedChoice),
     ("speed_custom", "output", "custom_speed", _number(float, 0.001)),
     ("quality", "output", "quality", Quality),
+    ("source_volume", "output", "source_volume", _number(float, 0, 200)),
     ("out_folder", "output", "folder", _text),
     ("out_name", "output", "file_name", _text),
     ("text_on", "text_overlay", "on", _switch),
@@ -139,6 +151,8 @@ class ProjectSettings:
     the same order, whose size the old rules give (`render.legacy_panels`)."""
     audio_panel: int | None = 0
     """Position in `panels` of the Audio Panel, counted from 0. None is no sound."""
+    tracks: list[dict[str, Any]] = field(default_factory=list)
+    """One dict per Audio Track, in order: its "path" and any of `TRACK_KEYS`."""
 
 
 def _put(section: dict, name: str, value: Any) -> None:
@@ -188,6 +202,10 @@ def dumps(settings: ProjectSettings) -> str:
         "panels": [{key: panel[key] for key in PANEL_KEYS} for panel in settings.panels or []],
         "sources": sources,
         "audio_panel": None if settings.audio_panel is None else settings.audio_panel + 1,
+        "audio_tracks": [
+            {name: track[key] for key, name, _ in _TRACK_FIELDS if key in track}
+            for track in settings.tracks
+        ],
         **sections,
     }
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
@@ -255,6 +273,22 @@ def loads(text: str, name: str = "This file") -> ProjectSettings:
                 source["row"] = 1
         sources.append(source)
 
+    listed = document.get("audio_tracks", [])
+    if not isinstance(listed, list):
+        raise EditError(f"{name} has a value for audio tracks that cannot be used: {listed!r}")
+    tracks = []
+    for number, entry in enumerate(listed, start=1):
+        track = {}
+        for key, field_name, read in _TRACK_FIELDS:
+            shown = f"audio track {number} {field_name}".replace("_", " ")
+            try:
+                track[key] = _read(entry, field_name, read, shown, name)
+            except KeyError:
+                continue
+        if not track.get("path"):
+            raise EditError(f"{name} does not say where Audio Track {number} is")
+        tracks.append(track)
+
     shared = {}
     for key, section, field_name, read in _SHARED_FIELDS:
         shown = (f"{section}.{field_name}" if section else field_name).replace("_", " ")
@@ -279,7 +313,9 @@ def loads(text: str, name: str = "This file") -> ProjectSettings:
             raise EditError(
                 f"{name} has a value for {audio_key.replace('_', ' ')} that cannot be used: {chosen!r}"
             )
-    return ProjectSettings(sources=sources, shared=shared, panels=panels, audio_panel=audio_panel)
+    return ProjectSettings(
+        sources=sources, shared=shared, panels=panels, audio_panel=audio_panel, tracks=tracks
+    )
 
 
 def load(path: str | Path) -> ProjectSettings:

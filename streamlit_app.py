@@ -8,7 +8,9 @@ from pathlib import Path
 import streamlit as st
 
 from vid_editor import dialogs, project_file
+from vid_editor.audio import MAX_VOLUME, mix_hint, track_span, volume_text
 from vid_editor.model import (
+    AudioTrack,
     Corner,
     Crop,
     DraftSettings,
@@ -35,7 +37,9 @@ from vid_editor.render import (
     frame_hints,
     geometry,
     legacy_panels,
+    mix_level,
     open_source,
+    open_track,
     output_rate,
     preview,
     render,
@@ -49,6 +53,7 @@ from vid_editor.render import (
     sequence_silence_reason,
     sequence_spans,
     silence_reason,
+    sound_settings,
     source_info,
     source_sizes,
     span_of,
@@ -96,6 +101,34 @@ def opened(path: str):
     if not Path(path).is_file():
         raise EditError(f"No file found at {path}")
     return cached_source(path, Path(path).stat().st_mtime)
+
+
+@st.cache_resource(max_entries=16, on_release=lambda clip: clip.close(), show_spinner="Opening sound")
+def cached_track(path: str, modified: float):
+    """An opened Audio Track, reused across reruns until the file changes."""
+    return open_track(path)
+
+
+def opened_track(path: str):
+    if not Path(path).is_file():
+        raise EditError(f"No file found at {path}")
+    return cached_track(path, Path(path).stat().st_mtime)
+
+
+@st.cache_data(max_entries=8, show_spinner="Measuring the mix")
+def measured_mix(project: Project, files: tuple):
+    """The Mix Hint's reading of a Project's sound.
+
+    `files` holds each Source and Audio Track file with the time it was last
+    changed, so a changed file is measured again. The files are opened afresh,
+    so the Preview's readers are left alone.
+    """
+    with ExitStack() as readers:
+        source_clips = [readers.enter_context(open_source(source.path)) for source in project.sources]
+        track_clips = [
+            readers.enter_context(open_track(track.path)) for track in project.output.audio_tracks
+        ]
+        return mix_level(project, source_clips, track_clips)
 
 
 def clean(path: str) -> str:
@@ -221,11 +254,57 @@ def move_source(source_id: int, step: int) -> None:
     st.session_state.source_ids = source_ids
 
 
+TRACK_KEYS = ("tr_path", *(f"tr_{key.removeprefix('track_')}" for key in project_file.TRACK_KEYS))
+TRACK_DEFAULTS = {
+    "tr_start": AudioTrack.start,
+    "tr_file_start": AudioTrack.file_start,
+    "tr_volume": AudioTrack.volume,
+    "tr_fade_out": AudioTrack.fade_out,
+}
+
+
+def add_track(path: str, kept: dict | None = None) -> int:
+    """Add an Audio Track after the others. `kept` holds settings from a Project file."""
+    state = st.session_state
+    track_id = state.get("next_track_id", 1)
+    state.next_track_id = track_id + 1
+    state.track_ids = [*state.get("track_ids", []), track_id]
+    state[f"tr_path_{track_id}"] = path
+    for key, value in TRACK_DEFAULTS.items():
+        state[f"{key}_{track_id}"] = (kept or {}).get(f"track_{key.removeprefix('tr_')}", value)
+    return track_id
+
+
+def remove_track(track_id: int) -> None:
+    state = st.session_state
+    state.track_ids = [other for other in state.track_ids if other != track_id]
+    for key in TRACK_KEYS:
+        state.pop(f"{key}_{track_id}", None)
+
+
+def browse_to_add_track() -> None:
+    state = st.session_state
+    track_ids = state.get("track_ids", [])
+    start = str(Path(state[f"tr_path_{track_ids[-1]}"]).parent) if track_ids else ""
+    chosen = dialogs.pick_audio(start)
+    if chosen:
+        state.add_track_path = chosen
+
+
+def browse_to_locate_track(track_id: int) -> None:
+    current = st.session_state[f"tr_path_{track_id}"]
+    chosen = dialogs.pick_audio(str(Path(current).parent))
+    if chosen:
+        st.session_state[f"tr_path_{track_id}"] = chosen
+
+
 def new_project() -> None:
     """Clear the screen. The workflow chosen stays as it is."""
     state = st.session_state
     for source_id in list(state.get("source_ids", [])):
         remove_source(source_id)
+    for track_id in list(state.get("track_ids", [])):
+        remove_track(track_id)
     for key in (*project_file.SHARED_KEYS, "audio_pick", "last_render", "draft", "seq_time"):
         if key != "workflow":
             state.pop(key, None)
@@ -340,6 +419,8 @@ def open_project() -> None:
         for source in settings.sources:
             kept = {key: source[key] for key in project_file.SOURCE_KEYS if key in source}
             add_source(source["path"], kept, panel_ids[source["panel"]])
+    for track in settings.tracks:
+        add_track(track["path"], track)
     state.update(settings.shared)
     state.audio_pick = (
         NO_SOUND if settings.audio_panel is None else state.panel_ids[settings.audio_panel]
@@ -373,6 +454,26 @@ state = st.session_state
 state.setdefault("source_ids", [])
 state.setdefault("panel_ids", [])
 state.setdefault("workflow", Workflow.GRID)
+state.setdefault("track_ids", [])
+state.setdefault("source_volume", 100.0)
+# Audio Tracks belong to the Output, so they are kept while there is no Source
+# and their controls are not drawn.
+for track_id in state.track_ids:
+    for key in TRACK_KEYS:
+        state[f"{key}_{track_id}"] = state[f"{key}_{track_id}"]
+state.source_volume = state.source_volume
+
+# A path typed or browsed for is added as an Audio Track here, before the box
+# that holds it is drawn, so that the box can be emptied again.
+new_track_path = clean(state.get("add_track_path", ""))
+if new_track_path:
+    state.add_track_path = ""
+    try:
+        opened_track(new_track_path)
+    except EditError as error:
+        state.add_track_error = str(error)
+    else:
+        add_track(new_track_path)
 # The switch is drawn on every run, but its value is kept alive like the others.
 state.workflow = state.workflow
 grid = state.workflow is Workflow.GRID
@@ -1149,6 +1250,25 @@ with settings:
                 disabled=state.speed_choice != SpeedChoice.CUSTOM,
             )
             speed_hint = st.empty()
+        st.segmented_control(
+            "Quality",
+            list(Quality),
+            key="quality",
+            format_func=lambda quality: quality.value,
+            required=True,
+        )
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            st.text_input("Output folder", key="out_folder")
+            st.button(
+                "Browse", icon=":material/folder_open:", on_click=browse_output_folder, key="browse_folder"
+            )
+        st.text_input("Output file name", key="out_name")
+
+    track_ids: list[int] = state.track_ids
+    track_clips, track_problems, track_hints = {}, {}, {}
+    with st.container(border=True):
+        st.subheader("Sound")
+        if grid:
             st.selectbox(
                 "Audio Panel",
                 audio_options,
@@ -1164,19 +1284,104 @@ with settings:
                 "Each Source keeps its own sound while it is on show. A Source with no sound, "
                 "or whose Play Speed is not 1, is silent. The timing table says which."
             )
-        st.segmented_control(
-            "Quality",
-            list(Quality),
-            key="quality",
-            format_func=lambda quality: quality.value,
-            required=True,
+        st.number_input(
+            "Sources' volume (%)",
+            key="source_volume",
+            min_value=0.0,
+            max_value=MAX_VOLUME,
+            step=5.0,
+            format="%g",
+            help=(
+                "The Audio Panel's sound, as a percentage of its file. 100 is as it is."
+                if grid
+                else "Every Source's sound alike, as a percentage of its file. 100 is as it is."
+            ),
         )
+        st.caption(f"Sources' sound: {volume_text(state.source_volume)}.")
+
         with st.container(horizontal=True, vertical_alignment="bottom"):
-            st.text_input("Output folder", key="out_folder")
-            st.button(
-                "Browse", icon=":material/folder_open:", on_click=browse_output_folder, key="browse_folder"
+            st.text_input(
+                "Add an Audio Track",
+                key="add_track_path",
+                placeholder=r"C:\music\song.mp3",
+                help="A sound file, or a video whose sound is wanted, mixed over the whole Output. "
+                "It is placed on the Output's running time, so no Sync Point or speed moves it, "
+                "and it plays even while the Sources are silent.",
             )
-        st.text_input("Output file name", key="out_name")
+            st.button(
+                "Browse", icon=":material/folder_open:", on_click=browse_to_add_track, key="browse_track"
+            )
+        if add_track_error := state.pop("add_track_error", None):
+            st.error(add_track_error, icon=":material/error:")
+
+        for number, track_id in enumerate(track_ids, start=1):
+            path = clean(state[f"tr_path_{track_id}"])
+            with st.container(border=True):
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    st.text_input(
+                        f"Audio Track {number}",
+                        key=f"tr_path_{track_id}",
+                        help="Change the path to locate a file that has moved; the settings are kept.",
+                    )
+                    st.button(
+                        "Browse",
+                        icon=":material/folder_open:",
+                        on_click=browse_to_locate_track,
+                        args=(track_id,),
+                        key=f"browse_track_{track_id}",
+                    )
+                    st.button(
+                        "Remove",
+                        icon=":material/delete:",
+                        on_click=remove_track,
+                        args=(track_id,),
+                        key=f"remove_track_{track_id}",
+                    )
+                try:
+                    track_clips[track_id] = opened_track(path)
+                except EditError as error:
+                    track_problems[track_id] = str(error)
+                    st.error(str(error), icon=":material/error:")
+                else:
+                    st.caption(f"The file runs for {float(track_clips[track_id].duration):.3f} s.")
+                track_columns = st.columns(4)
+                track_columns[0].number_input(
+                    "Starts at (s)",
+                    key=f"tr_start_{track_id}",
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.3f",
+                    help="Output running time at which the Audio Track begins.",
+                )
+                track_columns[1].number_input(
+                    "File start (s)",
+                    key=f"tr_file_start_{track_id}",
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.3f",
+                    help="Time within the file from which it plays, to skip an introduction.",
+                )
+                track_columns[2].number_input(
+                    "Volume (%)",
+                    key=f"tr_volume_{track_id}",
+                    min_value=0.0,
+                    max_value=MAX_VOLUME,
+                    step=5.0,
+                    format="%g",
+                    help="A percentage of the sound as it is in its file.",
+                )
+                track_columns[3].number_input(
+                    "Fade-out (s)",
+                    key=f"tr_fade_out_{track_id}",
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.3f",
+                    help="When the Output ends before the file does, the Audio Track fades "
+                    "out over this many seconds before the end of the Output: 1, the default, "
+                    "fades the last second. 0 is no fade.",
+                )
+                track_hints[track_id] = st.empty()
+        mix_slot = st.empty()
 
     with st.container(border=True):
         st.subheader("Overlays")
@@ -1297,6 +1502,14 @@ if state.get("project_path") and len(sized_panels) == len(panel_ids):
                 for panel_id in panel_ids
             ],
             audio_panel=audio_panel,
+            tracks=[
+                {"path": clean(state[f"tr_path_{track_id}"])}
+                | {
+                    key: state[f"tr_{key.removeprefix('track_')}_{track_id}"]
+                    for key in project_file.TRACK_KEYS
+                }
+                for track_id in track_ids
+            ],
         )
     )
     if project_text != state.get("saved_text"):
@@ -1369,6 +1582,17 @@ with result:
             quality=quality,
             text_overlay=text_overlay,
             image_overlay=image_overlay,
+            audio_tracks=tuple(
+                AudioTrack(
+                    path=clean(state[f"tr_path_{track_id}"]),
+                    start=state[f"tr_start_{track_id}"],
+                    file_start=state[f"tr_file_start_{track_id}"],
+                    volume=state[f"tr_volume_{track_id}"],
+                    fade_out=state[f"tr_fade_out_{track_id}"],
+                )
+                for track_id in track_ids
+            ),
+            source_volume=state.source_volume,
         ),
         audio_panel=audio_panel,
         workflow=state.workflow,
@@ -1420,12 +1644,6 @@ with result:
         for source_id, hint in zip(source_ids, hints):
             frame_hint_slots[source_id].caption(
                 f"Frame Hint at Output Speed {speed.output:.3g} and Output Rate {rate:g}: {hint}."
-            )
-        if silent_because and audio_panel is not None:
-            sound_hint.warning(
-                f"The Output has no sound, because {silent_because}. Sound is kept only when "
-                "the Source in the Audio Panel and the Output Speed are both real time.",
-                icon=":material/volume_off:",
             )
 
         # Each Panel's size in the Output, shown beside its typed size when they differ.
@@ -1514,6 +1732,100 @@ with result:
                 f"{width} by {height} pixels in the Output "
                 f"({sizes.layout.scale:.0%} of the typed size)."
             )
+
+    # Where each Audio Track plays, shown beside its settings.
+    playing = []
+    for number, (track_id, track) in enumerate(zip(track_ids, project.output.audio_tracks), start=1):
+        if track_id not in track_clips:
+            continue
+        try:
+            span = track_span(track, float(track_clips[track_id].duration), running_time)
+        except EditError as error:
+            track_problems[track_id] = str(error)
+            track_hints[track_id].error(str(error), icon=":material/error:")
+            continue
+        if not span.plays:
+            track_hints[track_id].caption(
+                f"{volume_text(track.volume)}. It starts at or after the end of the Output at "
+                f"{running_time:.3f} s, so it is not heard."
+            )
+            continue
+        if track.volume > 0:
+            playing.append(number)
+        text = (
+            f"{volume_text(track.volume)}. Plays {span.file_start:.3f} to {span.file_end:.3f} s "
+            f"of the file, from {span.output_start:.3f} to {span.output_end:.3f} s of the Output"
+        )
+        if span.cut_off:
+            text += f"; cut off {span.cut_off:.3f} s before its file ends" + (
+                f", fading out over the last {span.fade_out:.3f} s." if span.fade_out else ", with no fade."
+            )
+        elif running_time - span.output_end > 0.0005:
+            text += f"; its file ends {running_time - span.output_end:.3f} s before the Output does."
+        else:
+            text += "; its file and the Output end together."
+        track_hints[track_id].caption(text)
+
+    def heard(track_numbers: list[int]) -> str:
+        """Audio Tracks by number, as in "Audio Track 1" or "Audio Tracks 1, 2 and 3"."""
+        if len(track_numbers) == 1:
+            return f"Audio Track {track_numbers[0]}"
+        listed = ", ".join(str(number) for number in track_numbers[:-1])
+        return f"Audio Tracks {listed} and {track_numbers[-1]}"
+
+    if grid:
+        sources_heard = silent_because is None and state.source_volume > 0
+        sources_named = f"Panel {audio_panel + 1}" if audio_panel is not None else ""
+        if silent_because and audio_panel is not None:
+            sound_hint.warning(
+                f"The Sources are silent, because {silent_because}. Sound is kept only when "
+                "the Source in the Audio Panel and the Output Speed are both real time."
+                + (f" The Output's sound is {heard(playing)} only." if playing else ""),
+                icon=":material/volume_off:",
+            )
+    else:
+        sources_named = "the Sources"
+        sources_heard = state.source_volume > 0 and any(
+            sequence_silence_reason(clip, source) is None
+            for clip, source in zip(row_clips, project.sources)
+        )
+    if sources_heard and playing:
+        sound = f"sound from {sources_named} mixed with {heard(playing)}"
+    elif sources_heard:
+        sound = f"sound from {sources_named}"
+    elif playing:
+        sound = f"sound from {heard(playing)} only"
+    else:
+        sound = "no sound"
+
+    # The Mix Hint. Sound at no more than 100% with nothing laid over it is as
+    # loud as its files, so it is measured only once something could make it louder.
+    if track_problems:
+        mix_slot.caption("Mix Hint: locate or correct every Audio Track to measure the mix.")
+    elif playing or state.source_volume > 100:
+        files = tuple(
+            (path, Path(path).stat().st_mtime)
+            for path in [
+                *(source.path for source in project.sources),
+                *(track.path for track in project.output.audio_tracks),
+            ]
+        )
+        try:
+            level = measured_mix(sound_settings(project), files)
+        except (EditError, OSError) as error:
+            mix_slot.error(f"The mix could not be measured: {error}", icon=":material/error:")
+        else:
+            if level.clips:
+                mix_slot.warning(mix_hint(level), icon=":material/warning:")
+            else:
+                mix_slot.caption(mix_hint(level))
+    track_problem = None
+    if track_problems:
+        track_problem = (
+            "Locate or correct "
+            + " and ".join(f"Audio Track {track_ids.index(track_id) + 1}" for track_id in track_problems)
+            + "."
+        )
 
     def each_side(total: float, across: bool) -> str:
         return f"{total / 2:g} pixels " + ("left and right" if across else "above and below")
@@ -1627,7 +1939,7 @@ with result:
             shown_now.append(part)
         st.caption(
             f"Output is {width} by {height} pixels and runs for {running_time:.3f} s at {rate:g} "
-            f"frames per second. At {state.seq_time:.3f} s it shows "
+            f"frames per second, with {sound}. At {state.seq_time:.3f} s it shows "
             + (" mixed with ".join(shown_now) if shown_now else "black")
             + "."
         )
@@ -1718,7 +2030,9 @@ with result:
                 f"({window[1] - window[0]:.3f} s)."
             )
         draft_problem = None
-        if draft_file is None:
+        if track_problem and state.draft_sound:
+            draft_problem = track_problem
+        elif draft_file is None:
             draft_problem = "Choose an Output folder and file name. The Draft is written beside the Output."
         elif any(draft_file.resolve() == Path(path).resolve() for path in paths.values()):
             draft_problem = f"The Draft would replace the Source file {draft_file.name}."
@@ -1740,6 +2054,10 @@ with result:
                     fresh_clips = [
                         readers.enter_context(open_source(source.path)) for source in project.sources
                     ]
+                    fresh_tracks = [
+                        readers.enter_context(open_track(track.path))
+                        for track in project.output.audio_tracks
+                    ]
                     render_sequence_draft(
                         project,
                         fresh_clips,
@@ -1747,6 +2065,7 @@ with result:
                         draft_settings,
                         around,
                         on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
+                        tracks=fresh_tracks,
                     )
             except (EditError, OSError) as error:
                 bar.empty()
@@ -1775,7 +2094,6 @@ with result:
                     st.error(f"The Draft could not be opened: {error}", icon=":material/error:")
 
     if grid:
-        sound = "no sound" if silent_because else f"sound from Panel {audio_panel + 1}"
         row_count = len(sizes.layout.row_heights)
         grid_shape = f", in {row_count} Rows" if row_count > 1 else ""
         st.caption(
@@ -1844,10 +2162,12 @@ with result:
             draft_time = small.output.running_time
             if not state.draft_sound:
                 draft_sound = "without sound"
+            elif draft_silent and playing:
+                draft_sound = f"with sound from {heard(playing)} only, because {draft_silent}"
             elif draft_silent:
                 draft_sound = f"without sound, because {draft_silent}"
             else:
-                draft_sound = f"with sound from Panel {audio_panel + 1}"
+                draft_sound = "without sound" if sound == "no sound" else f"with {sound}"
             st.caption(
                 f"The Draft will be {draft_size.width} by {draft_size.height} pixels "
                 f"({draft_size.width / width:.0%} of the Output's size) at low picture quality, "
@@ -1856,7 +2176,9 @@ with result:
             )
 
         draft_problem = None
-        if draft_file is None:
+        if track_problem and state.draft_sound:
+            draft_problem = track_problem
+        elif draft_file is None:
             draft_problem = "Choose an Output folder and file name. The Draft is written beside the Output."
         elif any(draft_file.resolve() == Path(path).resolve() for path in paths.values()):
             draft_problem = f"The Draft would replace the Source file {draft_file.name}."
@@ -1879,12 +2201,17 @@ with result:
                     fresh_clips = [
                         readers.enter_context(open_source(source.path)) for source in project.sources
                     ]
+                    fresh_tracks = [
+                        readers.enter_context(open_track(track.path))
+                        for track in project.output.audio_tracks
+                    ]
                     render_draft(
                         project,
                         fresh_clips,
                         draft_file,
                         draft_settings,
                         on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
+                        tracks=fresh_tracks,
                     )
             except (EditError, OSError) as error:
                 bar.empty()
@@ -1922,6 +2249,8 @@ with result:
         problem = "The Output file name must end in .mp4."
     elif any(destination.resolve() == Path(path).resolve() for path in paths.values()):
         problem = "The Output cannot replace its own Source file."
+    elif track_problem:
+        problem = track_problem
     if problem:
         st.warning(problem, icon=":material/warning:")
     if grid and empty_panels():
@@ -1950,11 +2279,16 @@ with result:
                 fresh_clips = [
                     readers.enter_context(open_source(source.path)) for source in project.sources
                 ]
+                fresh_tracks = [
+                    readers.enter_context(open_track(track.path))
+                    for track in project.output.audio_tracks
+                ]
                 written = render(
                     project,
                     fresh_clips,
                     destination,
                     on_progress=lambda stage, fraction: bar.progress(fraction, text=f"Writing {stage}"),
+                    tracks=fresh_tracks,
                 )
         except (EditError, OSError) as error:
             bar.empty()

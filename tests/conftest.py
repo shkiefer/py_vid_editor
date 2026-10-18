@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from moviepy import AudioClip, VideoClip, VideoFileClip
+from moviepy import AudioClip, AudioFileClip, VideoClip, VideoFileClip
 
 SOURCE_DURATION = 4.0
 SOURCE_SIZE = (160, 120)
@@ -81,4 +81,31 @@ def tall_source_path(tmp_path_factory) -> str:
 @pytest.fixture
 def tall_source_clip(tall_source_path):
     with VideoFileClip(tall_source_path) as clip:
+        yield clip
+
+
+TRACK_DURATION = 3.0
+TRACK_LEVEL = 0.5
+
+
+@pytest.fixture(scope="session")
+def track_path(tmp_path_factory) -> str:
+    """A 3 second stereo WAV file holding a 220 Hz tone at half of full scale.
+
+    Stereo, since a mono file is read as stereo 3 dB lower.
+    """
+    path = tmp_path_factory.mktemp("tracks") / "track.wav"
+
+    def tone_at(t):
+        level = TRACK_LEVEL * np.sin(2 * np.pi * 220 * np.asarray(t))
+        return np.stack([level, level], axis=-1)
+
+    tone = AudioClip(tone_at, duration=TRACK_DURATION, fps=44100)
+    tone.write_audiofile(str(path), fps=44100, logger=None)
+    return str(path)
+
+
+@pytest.fixture
+def track_clip(track_path):
+    with AudioFileClip(track_path) as clip:
         yield clip

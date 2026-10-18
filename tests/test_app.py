@@ -293,7 +293,7 @@ def test_every_change_is_saved_once_the_project_has_a_file(source_path, tmp_path
     app = open_app(source_path)
     app.number_input(key="sync_point_1").set_value(1.5).run()
     save_project_as(app, project, monkeypatch)
-    assert saved(project)["format"] == 4 and saved(project)["audio_panel"] == 1
+    assert saved(project)["format"] == 5 and saved(project)["audio_panel"] == 1
     assert saved(project)["panels"] == [{"row": 1, "width": 160, "height": 120}]
     assert saved(project)["sources"][0] | {"crop": None, "aspect_override": None} == {
         "path": source_path,
@@ -941,7 +941,7 @@ def test_a_project_from_before_typed_panels_opens_with_the_same_output(
     assert app.number_input(key="source_width_1").value == 80
     assert app.number_input(key="source_width_2").value is None
     assert "with sound from Panel 1" in captions(app)
-    assert saved(project)["format"] == 4 and len(saved(project)["panels"]) == 2
+    assert saved(project)["format"] == 5 and len(saved(project)["panels"]) == 2
 
 
 # ------------------------------------------------------------------- Sequence
@@ -1129,3 +1129,141 @@ def test_a_sequence_draft_is_made_around_a_join(source_path, tall_source_path, t
     assert not app.exception
     with VideoFileClip(str(tmp_path / "sequence_draft.mp4")) as draft:
         assert draft.duration == pytest.approx(2.0, abs=0.15)
+
+
+# ----------------------------------------------------------------- Audio Tracks
+
+
+def add_track(app: AppTest, track_path: str) -> None:
+    app.text_input(key="add_track_path").set_value(track_path).run()
+    assert not app.exception
+
+
+def test_an_audio_track_says_where_it_plays_and_how_loud_it_is(source_path, track_path):
+    app = open_app(source_path)
+    app.number_input(key="lead_out").set_value(2.0).run()
+    add_track(app, track_path)
+    assert app.text_input(key="tr_path_1").value == track_path
+    assert app.text_input(key="add_track_path").value == ""
+    assert (
+        "100% = 0.0 dB, as in the file. Plays 0.000 to 2.000 s of the file, from 0.000 to "
+        "2.000 s of the Output; cut off 1.000 s before its file ends, fading out over the last "
+        "1.000 s." in captions(app)
+    )
+    app.number_input(key="tr_fade_out_1").set_value(0.0).run()
+    assert "cut off 1.000 s before its file ends, with no fade." in captions(app)
+    assert "with sound from Panel 1 mixed with Audio Track 1. Output Speed 1." in captions(app)
+
+    app.number_input(key="tr_start_1").set_value(1.5)
+    app.number_input(key="tr_volume_1").set_value(30.0).run()
+    assert "30% = −10.5 dB. Plays 0.000 to 0.500 s of the file, from 1.500 to 2.000 s" in captions(app)
+
+    app.number_input(key="tr_start_1").set_value(5.0).run()
+    assert "starts at or after the end of the Output at 2.000 s, so it is not heard" in captions(app)
+    assert "with sound from Panel 1. Output Speed 1." in captions(app)
+
+
+def test_the_mix_hint_warns_when_the_mix_clips(source_path, track_path):
+    app = open_app(source_path)
+    assert "Mix Hint" not in captions(app)  # nothing can make the Sources louder yet
+    add_track(app, track_path)
+    hint = next(warning.value for warning in app.warning if "Mix Hint" in warning.value)
+    assert "the mix clips for" in hint and "Lower the volumes by about" in hint
+
+    app.number_input(key="source_volume").set_value(40.0)
+    app.number_input(key="tr_volume_1").set_value(40.0).run()
+    assert "Sources' sound: 40% = −8.0 dB." in captions(app)
+    assert "no clipping." in captions(app)
+    assert not any("Mix Hint" in warning.value for warning in app.warning)
+
+
+def test_an_audio_track_plays_while_the_sources_are_silent(source_path, track_path):
+    app = open_app(source_path)
+    add_track(app, track_path)
+    app.number_input(key="record_rate_1").set_value(40.0).run()
+    assert "The Output's sound is Audio Track 1 only." in app.warning[0].value
+    assert "with sound from Audio Track 1 only. Output Speed 0.25." in captions(app)
+
+
+def test_an_audio_track_is_rendered_into_the_output(source_path, track_path, tmp_path):
+    app = open_app(source_path)
+    app.selectbox(key="audio_pick").set_value(0).run()  # no sound from the Panel
+    add_track(app, track_path)
+    app.text_input(key="out_folder").set_value(str(tmp_path))
+    app.text_input(key="out_name").set_value("result.mp4").run()
+    app.button(key="render").click().run()
+    assert not app.exception
+    with VideoFileClip(str(tmp_path / "result.mp4")) as output:
+        assert output.audio is not None
+        assert abs(output.audio.get_frame(0.5)).max() < 0.6
+
+
+def test_a_missing_audio_track_stops_the_render_and_keeps_its_settings(
+    source_path, track_path, tmp_path
+):
+    moved = tmp_path / "moved.wav"
+    shutil.copy(track_path, moved)
+    app = open_app(source_path)
+    add_track(app, str(moved))
+    app.number_input(key="tr_volume_1").set_value(60.0).run()
+    moved.unlink()
+    app.run()
+    assert any("No file found" in error.value for error in app.error)
+    assert "Locate or correct Audio Track 1." in [warning.value for warning in app.warning]
+    assert app.button(key="render").disabled
+    app.text_input(key="tr_path_1").set_value(track_path).run()
+    assert app.number_input(key="tr_volume_1").value == 60.0
+    assert not app.button(key="render").disabled
+
+
+def test_an_unreadable_audio_track_is_not_added(source_path, tmp_path):
+    app = open_app(source_path)
+    add_track(app, str(tmp_path / "nowhere.mp3"))
+    assert "No file found" in app.error[0].value
+    assert app.session_state["track_ids"] == []
+
+
+def test_an_audio_track_can_be_removed(source_path, track_path):
+    app = open_app(source_path)
+    add_track(app, track_path)
+    add_track(app, track_path)
+    app.button(key="remove_track_1").click().run()
+    assert not app.exception
+    assert [box.key for box in app.text_input if box.key.startswith("tr_path_")] == ["tr_path_2"]
+    assert any("Audio Track 1" == box.label for box in app.text_input)
+
+
+def test_audio_tracks_are_saved_and_reopened(source_path, track_path, tmp_path, monkeypatch):
+    project = tmp_path / "with_music.json"
+    first = open_app(source_path)
+    add_track(first, track_path)
+    first.number_input(key="tr_start_1").set_value(0.5)
+    first.number_input(key="tr_file_start_1").set_value(0.25)
+    first.number_input(key="tr_volume_1").set_value(30.0)
+    first.number_input(key="tr_fade_out_1").set_value(2.0)
+    first.number_input(key="source_volume").set_value(80.0).run()
+    save_project_as(first, project, monkeypatch)
+    assert saved(project)["audio_tracks"] == [
+        {"path": track_path, "start": 0.5, "file_start": 0.25, "volume": 30.0, "fade_out": 2.0}
+    ]
+    assert saved(project)["output"]["source_volume"] == 80.0
+
+    app = open_app()
+    open_project(app, project, monkeypatch)
+    assert app.text_input(key="tr_path_1").value == track_path
+    assert app.number_input(key="tr_start_1").value == 0.5
+    assert app.number_input(key="tr_file_start_1").value == 0.25
+    assert app.number_input(key="tr_volume_1").value == 30.0
+    assert app.number_input(key="tr_fade_out_1").value == 2.0
+    assert app.number_input(key="source_volume").value == 80.0
+
+    app.button(key="new_project").click().run()
+    assert app.session_state["track_ids"] == []
+
+
+def test_a_sequence_mixes_its_audio_tracks_too(source_path, track_path):
+    app = as_sequence(open_app(source_path, source_path))
+    add_track(app, track_path)
+    assert "with sound from the Sources mixed with Audio Track 1." in captions(app)
+    app.number_input(key="source_volume").set_value(0.0).run()
+    assert "with sound from Audio Track 1 only." in captions(app)

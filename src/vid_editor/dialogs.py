@@ -31,6 +31,16 @@ if kind == "file":
         ],
         **options,
     )
+elif kind == "audio":
+    chosen = filedialog.askopenfilename(
+        title="Choose a sound file",
+        filetypes=[
+            ("Sound files", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.wma"),
+            ("Video files", "*.mp4 *.mov *.avi *.mkv *.wmv *.m4v *.webm *.mts"),
+            ("All files", "*.*"),
+        ],
+        **options,
+    )
 elif kind == "image":
     chosen = filedialog.askopenfilename(
         title="Choose an image",
@@ -75,6 +85,11 @@ def _ask(kind: str, initial_dir: str) -> str | None:
 def pick_file(initial_dir: str = "") -> str | None:
     """Ask the user for a video file. Returns None if they cancel."""
     return _ask("file", initial_dir)
+
+
+def pick_audio(initial_dir: str = "") -> str | None:
+    """Ask the user for a file with sound, such as music. Returns None if they cancel."""
+    return _ask("audio", initial_dir)
 
 
 def pick_image(initial_dir: str = "") -> str | None:

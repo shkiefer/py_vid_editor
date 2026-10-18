@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from moviepy import (
+    AudioClip,
+    AudioFileClip,
     ColorClip,
     CompositeAudioClip,
     VideoClip,
@@ -27,6 +29,7 @@ from moviepy import (
 from moviepy.video.io.ffmpeg_reader import FFmpegInfosParser
 from proglog import ProgressBarLogger
 
+from vid_editor.audio import MixLevel, TrackSpan, check_volume, track_gain, track_span
 from vid_editor.layout import Layout, Picture, even, panel_layout, picture_in, width_for_height
 from vid_editor.legacy_layout import grid_layout
 from vid_editor.model import (
@@ -107,6 +110,16 @@ def open_source(path: str) -> VideoFileClip:
         return VideoFileClip(path)
     except Exception as error:  # MoviePy raises several types for bad files
         raise EditError(f"Could not read {path} as a video: {error}") from error
+
+
+def open_track(path: str) -> AudioFileClip:
+    """Open an Audio Track's file, which may be any file with sound. The caller closes it."""
+    if not Path(path).is_file():
+        raise EditError(f"No file found at {path}")
+    try:
+        return AudioFileClip(path)
+    except Exception as error:  # MoviePy raises several types for bad files
+        raise EditError(f"Could not read {path} as sound: {error}") from error
 
 
 def source_info(clip: VideoFileClip) -> SourceInfo:
@@ -527,10 +540,61 @@ def _is_untouched(clip: VideoFileClip, source: Source, panel_size: tuple[int, in
     )
 
 
+def track_spans(
+    project: Project, tracks: Sequence[AudioFileClip], running_time: float
+) -> list[TrackSpan]:
+    """Where each Audio Track plays in the Output. `tracks` are their opened files, in order."""
+    if len(project.output.audio_tracks) != len(tracks):
+        raise ValueError("Each Audio Track needs its own opened file")
+    spans = []
+    for number, (track, clip) in enumerate(zip(project.output.audio_tracks, tracks), start=1):
+        try:
+            spans.append(track_span(track, float(clip.duration), running_time))
+        except EditError as error:
+            raise EditError(f"Audio Track {number}: {error}") from error
+    return spans
+
+
+def _mixed_sound(
+    project: Project,
+    source_sound: AudioClip | None,
+    tracks: Sequence[AudioFileClip],
+    running_time: float,
+) -> AudioClip | None:
+    """The sound from the Sources at its volume, mixed with every Audio Track at its own."""
+    output = project.output
+    check_volume(output.source_volume, "The Sources' volume")
+    sounds = []
+    if source_sound is not None and output.source_volume > 0:
+        if output.source_volume != 100:
+            source_sound = source_sound.with_effects([afx.MultiplyVolume(output.source_volume / 100)])
+        sounds.append(source_sound)
+    for track, clip, span in zip(output.audio_tracks, tracks, track_spans(project, tracks, running_time)):
+        if not span.plays or track.volume <= 0:
+            continue
+        piece = clip.subclipped(span.file_start, span.file_end).transform(
+            lambda get_frame, t, span=span, volume=track.volume: get_frame(t)
+            * track_gain(span, volume, t + span.output_start)[..., None],
+            keep_duration=True,
+        )
+        sounds.append(piece.with_start(span.output_start))
+    if not sounds:
+        return None
+    return CompositeAudioClip(sounds).with_duration(running_time)
+
+
+def _with_sound(output: VideoClip, sound: AudioClip | None) -> VideoClip:
+    return output.without_audio() if sound is None else output.with_audio(sound)
+
+
 def build_output(
-    project: Project, clips: Sequence[VideoFileClip], rough: bool = False
+    project: Project,
+    clips: Sequence[VideoFileClip],
+    rough: bool = False,
+    tracks: Sequence[AudioFileClip] = (),
 ) -> VideoClip:
-    """Compose the whole Output. `clips` are the opened Sources, in order."""
+    """Compose the whole Output. `clips` are the opened Sources and `tracks` the
+    opened Audio Tracks, each in order."""
     sizes = geometry(project, clips)
     layout, pictures = sizes.layout, sizes.pictures
     output_speed = speeds(project, clips).output
@@ -558,7 +622,9 @@ def build_output(
 
     silent = silence_reason(project, clips) is not None
     sound = None if silent else panels[audio_source(project)].audio
-    output = output.without_audio() if sound is None else output.with_audio(sound)
+    output = _with_sound(
+        output, _mixed_sound(project, sound, tracks, project.output.running_time)
+    )
 
     patches = overlay_patches(project.output, layout.width)
     if patches:
@@ -690,7 +756,10 @@ def _has_transitions(spans: Sequence[ClipSpan]) -> bool:
 
 
 def build_sequence(
-    project: Project, clips: Sequence[VideoFileClip], rough: bool = False
+    project: Project,
+    clips: Sequence[VideoFileClip],
+    rough: bool = False,
+    tracks: Sequence[AudioFileClip] = (),
 ) -> VideoClip:
     """Compose a whole Sequence: each Source in turn, in play order, with its Transitions."""
     sizes = sequence_geometry(project, clips)
@@ -754,6 +823,9 @@ def build_sequence(
             output = output.with_audio(
                 CompositeAudioClip(sounds).with_duration(spans[-1].output_end)
             )
+    output = _with_sound(
+        output, _mixed_sound(project, output.audio, tracks, spans[-1].output_end)
+    )
 
     patches = overlay_patches(project.output, layout.width)
     if patches:
@@ -811,11 +883,14 @@ def render_sequence_draft(
     draft: DraftSettings,
     around: float,
     on_progress: ProgressCallback | None = None,
+    tracks: Sequence[AudioFileClip] = (),
 ) -> Path:
     """Write a Draft of a Sequence: a stretch either side of a time, such as a Join."""
     start, end = sequence_draft_window(project, clips, draft, around)
     small = draft_project(project, clips, draft)
-    output = build_sequence(small, clips, rough=True).subclipped(start, end)
+    if not draft.sound:
+        tracks = ()
+    output = build_sequence(small, clips, rough=True, tracks=tracks).subclipped(start, end)
     if not draft.sound:
         output = output.without_audio()
     return _write(output, Path(destination), "ultrafast", _DRAFT_CRF, on_progress)
@@ -871,16 +946,65 @@ def render(
     clips: Sequence[VideoFileClip],
     destination: str | Path,
     on_progress: ProgressCallback | None = None,
+    tracks: Sequence[AudioFileClip] = (),
 ) -> Path:
     """Write the Output as an H.264 MP4 and return where it was written."""
     destination = Path(destination)
     if destination.suffix.lower() != ".mp4":
         raise EditError("The Output file name must end in .mp4")
-    if project.workflow is Workflow.SEQUENCE:
-        output = build_sequence(project, clips)
-    else:
-        output = build_output(project, clips)
+    build = build_sequence if project.workflow is Workflow.SEQUENCE else build_output
+    output = build(project, clips, tracks=tracks)
     return _write(output, destination, "medium", _CRF[project.output.quality], on_progress)
+
+
+def sound_settings(project: Project) -> Project:
+    """The Project with every setting that cannot change its sound put back to its start.
+
+    Two Projects that differ only in their picture have the same sound, so the
+    Mix Hint need not be worked out again for them.
+    """
+    return replace(
+        project,
+        sources=tuple(
+            replace(source, rotation=0.0, crop=Crop(), aspect_override=None, width=None)
+            for source in project.sources
+        ),
+        output=replace(
+            project.output,
+            width=None,
+            rate=None,
+            quality=Quality.MEDIUM,
+            text_overlay=None,
+            image_overlay=None,
+        ),
+    )
+
+
+_MIX_RATE = 44100
+"""Samples per second at which the Mix Hint measures the sound, as the Output writes it."""
+_MIX_CHUNK = 2000
+
+
+def mix_level(
+    project: Project, clips: Sequence[VideoFileClip], tracks: Sequence[AudioFileClip]
+) -> MixLevel:
+    """How loud the Output's mixed sound gets, read through from start to end."""
+    build = build_sequence if project.workflow is Workflow.SEQUENCE else build_output
+    sound = build(sound_settings(project), clips, tracks=tracks).audio
+    if sound is None:
+        return MixLevel(peak=0.0, at=0.0, clipped=0.0)
+    peak, at, over, read = 0.0, 0.0, 0, 0
+    # MoviePy's sound file reader gives silence for much more than a second at
+    # once, so the sound is read in pieces of the size the Output is written in.
+    for chunk in sound.iter_chunks(chunksize=_MIX_CHUNK, fps=_MIX_RATE):
+        loudness = np.abs(chunk).max(axis=1) if chunk.ndim > 1 else np.abs(chunk)
+        if len(loudness):
+            loudest = int(loudness.argmax())
+            if loudness[loudest] > peak:
+                peak, at = float(loudness[loudest]), (read + loudest) / _MIX_RATE
+            over += int((loudness > 1).sum())
+        read += len(loudness)
+    return MixLevel(peak=peak, at=at, clipped=over / _MIX_RATE)
 
 
 def draft_project(
@@ -892,6 +1016,8 @@ def draft_project(
     with no sound unless the Draft asks for it. The Output Rate and the speeds
     are the Output's. The text Overlay is sized in Output pixels, so it shrinks
     with the picture. An Output narrower than the Draft width is not enlarged.
+    In a Synced grid each Audio Track is moved with the Sync Event, so it is
+    heard against the same moment as in the Output.
     """
     if draft.lead_in < 0 or draft.lead_out < 0 or draft.lead_in + draft.lead_out <= 0:
         raise EditError("The Draft Lead-in plus Lead-out must be greater than zero")
@@ -905,6 +1031,16 @@ def draft_project(
         if text is not None:
             text = replace(text, size=max(4, round(text.size * draft.width / full_width)))
         output = replace(output, width=draft.width, text_overlay=text)
+    if not draft.sound:
+        output = replace(output, audio_tracks=())
+    elif project.workflow is Workflow.GRID:
+        earlier = project.output.lead_in - draft.lead_in
+        output = replace(
+            output,
+            audio_tracks=tuple(
+                replace(track, start=track.start - earlier) for track in output.audio_tracks
+            ),
+        )
     return replace(
         project, output=output, audio_panel=project.audio_panel if draft.sound else None
     )
@@ -916,9 +1052,16 @@ def render_draft(
     destination: str | Path,
     draft: DraftSettings,
     on_progress: ProgressCallback | None = None,
+    tracks: Sequence[AudioFileClip] = (),
 ) -> Path:
     """Write the Draft and return where it was written."""
     small = draft_project(project, clips, draft)
+    if not draft.sound:
+        tracks = ()
     return _write(
-        build_output(small, clips, rough=True), Path(destination), "ultrafast", _DRAFT_CRF, on_progress
+        build_output(small, clips, rough=True, tracks=tracks),
+        Path(destination),
+        "ultrafast",
+        _DRAFT_CRF,
+        on_progress,
     )

@@ -24,7 +24,15 @@ _Avoid_: Session, workspace, job
 
 **Audio Panel**:
 In a **Synced grid**, the one **Panel** whose sound is used in the **Output**, taken from the **Source** in it.
-_Avoid_: Audio Source, audio track, sound file, master audio
+_Avoid_: Audio Source, sound file, master audio
+
+**Audio Track**:
+A sound file laid over the **Output** and mixed with the sound from its **Sources**, placed on the **Output** running time.
+_Avoid_: Music, soundtrack, backing track, sound file
+
+**Mix Hint**:
+The loudest moment of the **Output**'s mixed sound, where it falls, and, when the mix goes past full scale, for how long it clips and how much quieter it must be not to.
+_Avoid_: Level meter, normalise, peak warning
 
 **Draft**:
 A small, low-quality render of a stretch of the **Output**, made only for checking it in motion: around the **Sync Event** in a **Synced grid**, or around a chosen **Join** (or the start) in a **Sequence**.
@@ -182,12 +190,24 @@ _Avoid_: Padding, filler, freeze
 - **Overlays**, size, frame rate, quality, and file format belong to the **Output**, not to any **Source**
 - The **Output** has at most one text **Overlay** and at most one image **Overlay**; each sits in one corner and lasts the whole running time
 - An **Overlay** is sized against the finished **Output** and stays on through every **Gap**
-- The **Output** has at most one **Audio Panel**; sound from every other **Panel** is discarded, never mixed
+- The **Output** has at most one **Audio Panel**; sound from every other **Panel** is discarded, never mixed, though **Audio Tracks** are mixed with it
 - Only a **Panel** holding a **Source** that has sound can be the **Audio Panel**; the default is the first such **Panel**, and "none" is allowed
 - Sound stays locked to its picture: the **Output** is silent during the **Audio Panel**'s **Gaps**
 - A **Panel** with less footage before its **Sync Point** than the **Lead-in** has a **Gap** at the front
 - A **Panel** with less footage after its **Sync Point** than the **Lead-out** has a **Gap** at the back
 - A **Gap** never shortens the **Output** and never freezes a frame
+
+### Audio Tracks
+
+- An **Output** of either workflow can have any number of **Audio Tracks**, each mixed with the sound from the **Sources**
+- An **Audio Track** has a start, in **Output** running time, and a file start, the time within its file from which it plays; both are 0 unless set
+- An **Audio Track** plays until its file runs out or the **Output** ends, whichever comes first; one cut off by the end of the **Output** fades out over a set length
+- An **Audio Track** is placed on **Output** running time, so no **Sync Point**, **Play Speed** or **Output Speed** moves it
+- Each **Audio Track** has its own volume, and the sound from the **Sources** has one volume for the whole **Output**: in a **Synced grid** the **Audio Panel**'s sound, in a **Sequence** every **Source**'s sound alike
+- A volume is a percentage of the sound as it is in its file, from 0 to 200, and 100 unless set
+- An **Audio Track** plays whether or not the **Sources** are silent, so an **Output** whose **Output Speed** is not real time can still have sound
+- A **Draft** with sound carries the **Audio Tracks**, mixed as in the **Output**
+- The **Mix Hint** only warns; no volume is changed for the user
 
 ### The two workflows
 

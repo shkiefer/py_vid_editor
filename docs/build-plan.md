@@ -4,7 +4,7 @@ The build order and the decisions that are not domain language. Domain terms liv
 
 ## Slices
 
-Each slice ends with something runnable. All twelve are done; the build paused there on 2026-10-14 with no slice planned after 12.
+Each slice ends with something runnable. The first twelve were done by 2026-10-14; slice 13 was added and done on 2026-10-17.
 
 1. **Environment** (done) — `uv` project on Python 3.13, MoviePy 2.x, Streamlit, a bundled open font, git repository, and a smoke test that MoviePy can read video, draw text, and encode MP4 with sound.
 2. **One Source, end to end** (done) — Browse for a file, type a Sync Point, set Lead-in and Lead-out, rotate and crop, see the Preview, render the Output.
@@ -18,6 +18,7 @@ Each slice ends with something runnable. All twelve are done; the build paused t
 10. **Layout of typed Panels** (done) — Panels set up first, each with its own width, height and Row; Sources assigned to Panels, still one to a Panel; every Source with its own resize and the two scale-to-Panel buttons; the Audio Panel; a new Project file format. An existing Project opens with the same Output as before.
 11. **Sequence, with cuts** (done) — the Sequence / Synced grid switch; Sources in play order in one typed Panel, each with a Start Point, an End Point and a Play Speed; a timing table, a Preview at any running time, and the Render; a new Project file format.
 12. **Transitions** (done) — at each Join a cut, a fade through black or a crossfade, each with its own length; a fade in at the start and out at the end; sound that fades and crossfades with the picture; a Draft around a chosen Join.
+13. **Audio Tracks** (done) — sound files mixed over the Output in both workflows, each with a start, a file start, a volume and a fade-out; one volume for the Sources' sound; the Mix Hint; a new Project file format.
 
 ## Decisions
 
@@ -109,13 +110,29 @@ The terms are in `../CONTEXT.md`: Synced grid, Sequence, Join, Transition, Play 
 - **A Join sits at the middle of its fade or crossfade** (slice 12), and a Draft around it is centred there.
 - **Project file** (slice 11): format 4 adds the workflow, the Sequence Panel and each Source's Start Point, End Point and Play Speed. A file without a workflow opens as a Synced grid.
 
+### Audio Tracks (slice 13)
+
+The terms are in `../CONTEXT.md`: Audio Track, Mix Hint.
+
+- **Where they are set**: a Sound box under the Output settings, in both workflows. It holds the Audio Panel (in a grid), the Sources' volume, "Add an Audio Track" by path or Browse, and one box per Audio Track with its path, Browse, Remove, Starts at, File start, Volume and Fade-out.
+- **Any file with sound** can be an Audio Track, a video included; only its sound is used. The Browse dialog offers sound files first.
+- **Volumes** are percentages from 0 to 200, each shown in decibels beside it. Gain is a plain multiplication; nothing is normalised or limited.
+- **Fade-out**: 1 s unless set, fading the last second before the Output ends; 0 s is no fade. It is used only when the Output ends before the file does, and linear like the Transitions. A track that runs out first stops with its file. There is no fade-in.
+- **Track feedback**: each Audio Track gives the file times it plays, the Output times they land on, and how much of its file the end of the Output cuts off. The Output caption names every sound that is heard.
+- **Mix Hint**: worked out only when an Audio Track is heard or the Sources' volume is over 100%, since sound at no more than 100% with nothing laid over it is as loud as its file. It reads the whole mix at 44.1 kHz, about 0.15 s for a 12 s Output, and is kept until a setting that changes the sound does; picture settings do not count.
+- **Draft**: "Draft sound" carries the Audio Tracks. In a grid each Audio Track is moved with the Sync Event, so it lines up with the picture as it does in the Output; one already playing at the Draft's start is heard from part way in.
+- **A missing Audio Track file** keeps its settings until it is located by retyping its path. Render, and a Draft with sound, wait until it is found.
+- **Audio Tracks belong to the Output**: they stay when Sources are added or removed. New Project clears them.
+- **Project file**: format 5 adds `audio_tracks` and the Output's `source_volume`. An older file opens with none.
+
 ## Known limits
 
 - **Rotation by an angle that is not a quarter turn is slow.** On a 1080p Source it costs roughly 110 ms per frame, against roughly 10 ms for a plain, cropped, or quarter-turned Source. The cost is in Pillow's image rotation.
 - **Each Source scaled to fit its Panel costs roughly 40 ms per frame at 1080p**, also in Pillow. Two 1080p Sources in a 1280 wide Output took about 90 ms per frame, so a 7 s Output at 60 frames per second rendered in about 40 s.
 - **A screen update takes about 0.25 s with two 1080p Sources** (it was 1.7 s before slice 6). About one step back in thirteen takes 0.8 s while ffmpeg restarts.
 - **The Preview at the Sync Event shows exactly the frame a stepped Sync Point names.** The rendered Output takes a frame every 1 / Output Rate seconds from its start, so it shows that same frame at the Sync Event only when the Lead-in is a whole number of Output frames.
-- **A mono Source gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
+- **A mono Source or Audio Track gives a stereo Output** with each channel 3 dB lower, which is the standard conversion.
+- **MoviePy's sound reader gives silence for more than about a second of sound asked for at once**, so the Mix Hint reads in pieces of 2000 samples, as the Output is written.
 - **A Draft of two 1080p Sources takes about 2 to 3 s for each second of a 60 frames per second Output**, against about 11 s at full size. Most of what is left is reading the Source files, so a smaller Draft is hardly quicker: 480 wide saved under 10% against 640.
 - **A large layout is slow at its typed size.** Four 1080p-sized Panels in two Rows of two gave a 2528 by 4492 Output under the old rules, and a 2 s Draft of it at 640 wide took about 11 s. An Output width brings the size down.
 - **The first Source still starts the layout.** A Panel cannot be made before any Source has been added.
