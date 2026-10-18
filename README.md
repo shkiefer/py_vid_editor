@@ -47,3 +47,7 @@ Save Project as keeps every setting in a readable JSON file, which is then updat
 ```
 uv run pytest
 ```
+
+## Licence
+
+MIT, in `LICENSE`. The bundled Carlito fonts are under the SIL Open Font License, in `assets/fonts/OFL.txt`.
