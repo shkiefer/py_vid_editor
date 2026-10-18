@@ -36,7 +36,7 @@ The app only listens on this computer. It reads Source files by path and writes 
 
 ## Add music or other sound
 
-In either workflow, the Sound box under the Output settings sets the Sources' volume and adds Audio Tracks: any file with sound, laid over the Output. Give each one the Output time it starts at, how far into its file to begin, its volume and the fade-out used when the Output ends first. Each one says where it plays. The Mix Hint gives the loudest point of the mix and warns when it clips.
+In either workflow, the Sound box under the Output settings sets the Sources' volume and adds Audio Tracks: any file with sound, laid over the Output. Give each one the Output time it starts at, how far into its file to begin, its volume and the fade-out used when the Output ends first. Volumes are percentages from 0 to 200, where 100 is as loud as the file. The fade-out is 1 s unless changed; 0 stops the track dead at the end. Each Audio Track says where it plays. The Mix Hint gives the loudest point of the mix and warns when it clips.
 
 ## Projects
 
